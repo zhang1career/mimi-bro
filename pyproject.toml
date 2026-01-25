@@ -1,0 +1,16 @@
+[project]
+name = "mimi-bro"
+version = "0.1.0"
+description = "Mimi-Bro for multi-agent Cursor CLI orchestration"
+requires-python = ">=3.11"
+
+dependencies = [
+  "typer[all]",
+  "pyyaml",
+  "docker",
+  "networkx"
+]
+
+[project.scripts]
+broker = "broker.cli:app"
+

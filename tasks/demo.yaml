@@ -1,0 +1,11 @@
+task:
+  id: demo-task
+  type: system_development
+  risk: low
+
+plan:
+  - id: agent-backend
+    role: backend
+  - id: agent-test
+    role: tester
+
