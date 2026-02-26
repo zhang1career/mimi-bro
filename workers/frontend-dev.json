@@ -1,0 +1,24 @@
+{
+  "worker": {
+    "id": "frontend-dev",
+    "objective": "Implement a frontend feature according to {{requirement}} within {{scope}}. Deliver working UI components, state/API wiring as needed, and mark all agent output as generated.",
+    "instructions": [
+      "Read and follow the requirement or spec ({{requirement}}); do not modify files outside {{scope}} unless the requirement explicitly includes them.",
+      "Implement components, pages, and data flow (state/API) as specified; preserve existing patterns and styling in the codebase.",
+      "Mark agent output as generated."
+    ],
+    "entrypoint": "."
+  },
+  "plans": [
+    { "id": "agent-frontend", "role": "backend", "mode": "agent" }
+  ],
+  "params": {
+    "scope": "src",
+    "requirement": "Describe the frontend feature: e.g. new page, component, or user flow."
+  },
+  "steps": [
+    { "id": "scope", "objective": "Confirm scope: components, pages, and data/API touchpoints from the requirement." },
+    { "id": "implement", "objective": "Implement UI and wire state/API; run the app to verify." },
+    { "id": "report", "objective": "Report what was created or changed; ensure output is marked generated." }
+  ]
+}

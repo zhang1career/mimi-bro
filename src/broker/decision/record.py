@@ -8,4 +8,3 @@ def record(decision: dict):
     LOG.parent.mkdir(exist_ok=True)
     with open(LOG, "a") as f:
         f.write(json.dumps(decision) + "\n")
-

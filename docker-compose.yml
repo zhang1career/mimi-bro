@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  cursor-agent:
+    image: cursor-agent:latest
+    container_name: cursor-agent
+    labels:
+      - "appmap=cursor-agent:8080"
+    env_file:
+      - ./docker/.env
+    # Prepend PATH at runtime so it works without rebuilding the image ($$ = literal $ in container)
+    command: ["sh", "-c", "export PATH=/workspace/agents:/workspace/tools/node/bin:$$PATH && exec sleep infinity"]
+    ports:
+      - "21000:8080"
+    volumes:
+      # DO NOT use docker.sock in prod enviroments
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker/workspace:/workspace:RW
+      - ./src/agent.py:/src/agent.py:RO
+      - ./src/common:/src/common:RO
+    networks:
+      - infrastructure_infrastructure
+
+networks:
+  services:
+    driver: bridge
+  infrastructure_infrastructure:
+    external: true

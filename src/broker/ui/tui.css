@@ -1,0 +1,88 @@
+/* bro submit TUI layout – light gray theme */
+$theme-fore: #d6d6d6;
+$theme-border: #6c6c6c;
+$theme-fill: #c4c4c4;
+
+.tree-container {
+  width: 40;
+  min-width: 20;
+  min-height: 18;
+  height: 1fr;
+}
+
+.tree-container Tree {
+  scrollbar-color: $theme-border;
+}
+
+/* Use left border instead of background so Rich label colors (running nodes) are preserved when selected */
+.tree-container .tree--cursor {
+  border-left: heavy $theme-fill;
+  padding-left: 1;
+}
+
+.tree-container .tree--highlight {
+  border-left: heavy $theme-fill;
+  padding-left: 1;
+}
+
+.log-container {
+  width: 1fr;
+  min-height: 18;
+  height: 1fr;
+  overflow: auto;
+  scrollbar-color: $theme-border;
+}
+
+#log-viewer {
+  height: 1fr;
+  overflow-y: auto;
+  padding: 1;
+}
+
+#console-container {
+  height: 12;
+  min-height: 8;
+  padding: 0 1;
+  border: solid $theme-border;
+}
+
+#console-title {
+  height: 1;
+}
+
+#console-log {
+  height: 1fr;
+  overflow-y: auto;
+  scrollbar-color: $theme-border;
+}
+
+#progress-container {
+  height: 5;
+  padding: 0 1;
+}
+
+#progress-bar-row {
+  height: auto;
+}
+
+#progress-bar-row #progress-label {
+  width: auto;
+}
+
+#progress-bar-row #progress-bar {
+  width: 1fr;
+  height: 3;
+}
+
+/* Progress bar filled segment: color set dynamically via class */
+#progress-bar Bar > .bar--bar {
+  background: $theme-fill 60%;
+}
+
+#progress-bar.progress-color-red Bar > .bar--bar { color: red; background: red 50%; }
+#progress-bar.progress-color-orange Bar > .bar--bar { color: #ed9121; background: #ed9121 50%; }
+#progress-bar.progress-color-yellow Bar > .bar--bar { color: yellow; background: yellow 50%; }
+#progress-bar.progress-color-green Bar > .bar--bar { color: green; background: green 50%; }
+#progress-bar.progress-color-blue Bar > .bar--bar { color: blue; background: blue 50%; }
+#progress-bar.progress-color-magenta Bar > .bar--bar { color: magenta; background: magenta 50%; }
+

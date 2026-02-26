@@ -42,7 +42,7 @@ Broker 是一个 CLI 程序
 
 Agent 是外部 Docker 容器
 
-broker submit task.yaml
+bro submit task.json
 broker status
 broker logs task-id
 broker stop task-id
@@ -137,26 +137,24 @@ CLI 打印 diff / reason
 不引 ML
 
 八、任务描述格式（锁死）
-✅ YAML
-task:
-  id: auth-refactor
-  type: system_development
-  risk: high
-
-plan:
-  - id: agent-auth
-    role: backend
-  - id: agent-test
-    role: tester
-
+✅ JSON
+{
+  "worker": {
+    "id": "auth-refactor",
+    "type": "system_development",
+    "risk": "high"
+  },
+  "plan": [
+    { "id": "agent-auth", "role": "backend" },
+    { "id": "agent-test", "role": "tester" }
+  ]
+}
 
 理由
 
-人可读
+系统输入与内部数据统一格式，便于数据扩散
 
-Agent 可生成
-
-易版本管理
+人可读、Agent 可生成、易版本管理
 
 九、日志与审计（锁死）
 ✅ 标准 logging + JSONL
@@ -176,7 +174,7 @@ logs/decisions.jsonl
 十、状态存储（锁死）
 ✅ 本地文件系统（v0.1）
 .state/
-├─ tasks/
+├─ tasks/           # 多步任务进度：.state/tasks/<task_id>/progress.json（断点续跑）
 ├─ agents/
 ├─ decisions/
 └─ artifacts/

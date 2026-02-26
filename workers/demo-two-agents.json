@@ -1,0 +1,26 @@
+{
+  "worker": {
+    "id": "demo-two-agents",
+    "objective": "Demonstrate DAG execution: writer produces output, reviewer consumes it.",
+    "instructions": [
+      "Do not modify files; only read and report.",
+      "Agent output must be marked generated; no autonomous merge."
+    ],
+    "entrypoint": "."
+  },
+  "plans": [
+    {
+      "id": "writer",
+      "role": "writer",
+      "mode": "ask",
+      "objective": "Write one sentence describing what this project (mimi-bro) does. Output to stdout or result only; do not create files."
+    },
+    {
+      "id": "reviewer",
+      "role": "reviewer",
+      "mode": "ask",
+      "objective": "Read the writer's output from works/ (same run, writer role) and say OK or one short improvement. Do not modify files.",
+      "deps": ["writer"]
+    }
+  ]
+}

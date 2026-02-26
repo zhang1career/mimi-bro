@@ -1,0 +1,20 @@
+{
+  "worker": {
+    "id": "{{task_id}}",
+    "objective": "Output a greeting message to {{person}}.",
+    "instructions": [
+      "Do not modify {{scope}}; only read and report.",
+      "Use {{style}} style."
+    ],
+    "entrypoint": "."
+  },
+  "plans": [
+    {"id": "agent-hello", "role": "backend", "mode": "ask"}
+  ],
+  "params": {
+    "task_id": "demo-greetings",
+    "person": "you",
+    "scope": "files",
+    "style": "friendly"
+  }
+}

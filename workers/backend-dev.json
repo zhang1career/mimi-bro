@@ -1,0 +1,27 @@
+{
+  "worker": {
+    "id": "backend-dev",
+    "objective": "Implement a backend feature according to {{requirement}} within {{scope}}. Deliver working API endpoints, database operations, business logic, and mark all agent output as generated.",
+    "instructions": [
+      "Read and follow the requirement or spec ({{requirement}}); do not modify files outside {{scope}} unless the requirement explicitly includes them.",
+      "Implement API endpoints, database models/migrations, services, and business logic as specified; preserve existing patterns and conventions in the codebase.",
+      "Handle errors gracefully and add appropriate validation for inputs.",
+      "Write or update tests if the codebase has existing test patterns.",
+      "Mark agent output as generated."
+    ],
+    "entrypoint": "."
+  },
+  "plans": [
+    { "id": "agent-backend", "role": "backend", "mode": "agent" }
+  ],
+  "params": {
+    "scope": "src",
+    "requirement": "Describe the backend feature: e.g. new API endpoint, database model, service, or business logic."
+  },
+  "steps": [
+    { "id": "scope", "objective": "Confirm scope: API endpoints, database models, services, and dependencies from the requirement." },
+    { "id": "implement", "objective": "Implement backend logic: API routes, database operations, services; test endpoints to verify." },
+    { "id": "validate", "objective": "Add input validation, error handling, and edge case coverage." },
+    { "id": "report", "objective": "Report what was created or changed; ensure output is marked generated." }
+  ]
+}
