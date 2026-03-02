@@ -21,4 +21,59 @@
 ## 2. 任务工作区
 
 `workers/` 下的文件的 `worker`.`id` 字段的值，叫做**员工ID**。
-`workspace/works/` 下的第一级文件夹，叫做**任务名称**。每个子任务运行时对应一个任务工作区目录。
+`workspace/works/` 下的第一级文件夹，叫做**任务ID**。每个子任务运行时对应一个任务工作区目录。
+
+---
+
+## 3. 核心概念层级
+
+| 概念 | 说明 | 文件位置 |
+|------|------|----------|
+| **Worker（员工）** | 预定义的员工配置，包含目标、指令、执行计划 | `workers/xxx.json` |
+| **Plan（计划）** | Worker 中的 `plans` 字段，定义子任务及其依赖关系 | `workers/xxx.json` 中的 `plans` |
+| **Plan Item** | `plans` 列表中的单个元素，可以是 skill/worker/inline 类型 | 同上 |
+| **Task（任务）** | Worker 执行时产生的运行时实体 | `works/{task_id}/task.json` |
+| **Breakdown** | Agent 运行时动态生成的子任务分解 | `works/{task_id}/breakdown.json` |
+
+### 3.1 Plan Item 类型
+
+Plan Item（计划项）有两种执行类型：
+
+| 类型 | 字段 | 说明 |
+|------|------|------|
+| `skill` | `"skill": "skill-id"` | 调用已注册的 skill（包括 worker） |
+| `inline` | 无 skill 字段，需 `mode` + `objective` | 直接启动 agent 执行 |
+
+### 3.2 Worker 是一种 Skill
+
+**重要概念**：Worker 是一种 Skill。区别在于 `invocation.type`：
+
+| Skill 类型 | invocation.type | 说明 |
+|------------|-----------------|------|
+| 普通 skill | `agent_run` 等 | 单次 agent 执行 |
+| Worker skill | `bro_submit` | 调用 `bro submit workers/xxx.json` |
+
+Worker 通过 `bro worker register` 命令注册为 skill：
+
+```bash
+bro worker register workers/backend-dev.json
+```
+
+注册后，该 worker 可以像普通 skill 一样通过 `skill` 字段调用。
+
+### 3.3 依赖关系
+
+Plan Item 通过 `deps` 字段声明依赖：
+
+```json
+{
+  "plans": [
+    {"id": "api", "skill": "api-builder", "deps": []},
+    {"id": "db", "skill": "db-builder", "deps": []},
+    {"id": "test", "skill": "integration-test", "deps": ["api", "db"]}
+  ]
+}
+```
+
+- `api` 和 `db` 无依赖，可**并行执行**
+- `test` 依赖前两者，在它们完成后执行

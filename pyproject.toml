@@ -16,7 +16,9 @@ dependencies = [
   "docker",
   "networkx",
   "rich",
-  "textual"
+  "textual",
+  "fastapi",
+  "uvicorn[standard]"
 ]
 
 [project.scripts]

@@ -7,7 +7,7 @@
       "Split into parts (each part = one executable sub-task).",
       "Order parts by dependency: items that others depend on come first.",
       "Write breakdown.json with format [{\"skill\": \"<skill_id>\", \"requirement\": \"...\", \"scope\": \"{{scope}}\"}, ...] for each part. Pass {{scope}} to each sub-task by default; override scope only when the requirement specifies a different platform (e.g. native/iOS → apps/native). Use skill_refs.",
-      "Do not modify existing tasks (demo-greetings.json, boost.json, euler.json) or src/. Sub-tasks must only create or modify files under the directory indicated by {{scope}} (e.g. docs/ when scope=docs); do not modify source code outside that directory.",
+      "Do not modify existing tasks (workers/*.json) or src/. Sub-tasks must only create or modify files under the directory indicated by {{scope}} (e.g. docs/ when scope=docs); do not modify source code outside that directory.",
       "Mark agent output as generated."
     ],
     "entrypoint": "."
@@ -22,9 +22,11 @@
     "scope": "src",
     "requirement": "Describe the frontend requirement here."
   },
-  "steps": [
-    {"id": "split", "objective": "Parse requirement and split into parts (sub-tasks)."},
-    {"id": "order", "objective": "Order parts by dependency; dependent items after their dependencies."},
-    {"id": "breakdown", "objective": "Write breakdown.json with skill, requirement and scope (when platform is specified) for each part; broker will invoke."}
-  ]
+  "steps": {
+    "agent-analyzer": [
+      {"id": "split", "objective": "Parse requirement and split into parts (sub-tasks)."},
+      {"id": "order", "objective": "Order parts by dependency; dependent items after their dependencies."},
+      {"id": "breakdown", "objective": "Write breakdown.json with skill, requirement and scope (when platform is specified) for each part; broker will invoke."}
+    ]
+  }
 }

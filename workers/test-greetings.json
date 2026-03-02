@@ -12,7 +12,7 @@
     {"id": "agent-hello", "role": "backend", "mode": "ask"}
   ],
   "params": {
-    "task_id": "demo-greetings",
+    "task_id": "test-greetings",
     "person": "you",
     "scope": "files",
     "style": "friendly"

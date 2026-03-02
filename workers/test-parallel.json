@@ -1,0 +1,19 @@
+{
+  "worker": {
+    "id": "test-parallel",
+    "objective": "Output a greeting message: {{requirement}}",
+    "instructions": [
+      "The requirement is provided in the objective above. Do NOT search for requirement files in the repository.",
+      "Execute the task as specified.",
+      "Mark agent output as generated."
+    ],
+    "entrypoint": "."
+  },
+  "plans": [
+    { "id": "agent-a", "role": "worker-a", "mode": "agent" },
+    { "id": "agent-b", "role": "worker-b", "mode": "agent" }
+  ],
+  "params": {
+    "requirement": "Describe the parallel test task"
+  }
+}

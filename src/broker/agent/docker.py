@@ -35,7 +35,15 @@ def _filter_result_only(container):
         process_line(buffer)
 
 
-client = docker.from_env()
+_client = None
+
+
+def _get_docker_client():
+    """Lazy initialization of docker client."""
+    global _client
+    if _client is None:
+        _client = docker.from_env()
+    return _client
 
 
 def _load_dotenv_from_project_root() -> None:
@@ -50,39 +58,39 @@ def run_container(
     task_id="demo",
     workspace=PROJECT_ROOT,
     work_dir_rel: str | None = None,
-    resource=None,
+    source=None,
 ):
     """
     workspace: work path (task.json, agent.log, works/) -> mounted at /workspace.
-    resource: resource path (source code, scripts) for agent to operate on; default = workspace.
-    When resource != workspace, mount resource at /resource and set RESOURCE=/resource; else RESOURCE=/workspace.
+    source: source path (source code, scripts) for agent to operate on; default = workspace.
+    When source != workspace, mount source at /source and set SOURCE=/source; else SOURCE=/workspace.
     """
-    res = resource if resource is not None else workspace
+    src = source if source is not None else workspace
     workspace = workspace.resolve() if hasattr(workspace, "resolve") else Path(workspace).resolve()
-    res = res.resolve() if hasattr(res, "resolve") else Path(res).resolve()
+    src = src.resolve() if hasattr(src, "resolve") else Path(src).resolve()
 
     print(f"[docker] starting agent {agent_id} ({role})", flush=True)
     print(f"[docker] workspace (work): {workspace} -> /workspace", flush=True)
-    if res != workspace:
-        print(f"[docker] resource: {res} -> /resource", flush=True)
+    if src != workspace:
+        print(f"[docker] source: {src} -> /source", flush=True)
 
     container_name = f"agent-{agent_id}"
 
     # Remove existing container if it exists
     try:
-        existing = client.containers.get(container_name)
+        existing = _get_docker_client().containers.get(container_name)
         existing.remove(force=True)
     except docker.errors.NotFound:
         pass
 
     try:
-        # Prepare environment variables: WORKSPACE = work root, RESOURCE = resource root for cursor --workspace
+        # Prepare environment variables: WORKSPACE = work root, SOURCE = source root for cursor --workspace
         env_vars = {
             "AGENT_ID": agent_id,
             "AGENT_ROLE": role,
             "TASK_ID": task_id,
             "WORKSPACE": "/workspace",
-            "RESOURCE": "/resource" if res != workspace else "/workspace",
+            "SOURCE": "/source" if src != workspace else "/workspace",
         }
         if work_dir_rel:
             env_vars["WORK_DIR_REL"] = work_dir_rel
@@ -98,12 +106,12 @@ def run_container(
             print(f"[docker] hint: Set CURSOR_API_KEY environment variable to authenticate cursor-agent", flush=True)
 
         volumes = {str(workspace): {"bind": "/workspace", "mode": "rw"}}
-        if res != workspace:
-            volumes[str(res)] = {"bind": "/resource", "mode": "ro"}
+        if src != workspace:
+            volumes[str(src)] = {"bind": "/source", "mode": "ro"}
 
         print("[docker] starting container (image cursor-agent:latest, may pull if missing)...", flush=True)
         # Run agent entrypoint; image default CMD is sleep infinity for debug
-        container = client.containers.run(
+        container = _get_docker_client().containers.run(
             image="cursor-agent:latest",
             name=container_name,
             environment=env_vars,
@@ -165,7 +173,7 @@ def run_container(
         print(f"[docker] unexpected error: {e}")
         # Try to get logs from container if it still exists
         try:
-            container = client.containers.get(container_name)
+            container = _get_docker_client().containers.get(container_name)
             logs = container.logs(stdout=True, stderr=True, tail=100)
             if logs:
                 print("[docker] container logs:")

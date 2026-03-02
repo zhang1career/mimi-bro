@@ -20,12 +20,26 @@ def propose(dag):
     for batch in batches_parallel:
         for node in batch:
             data = dag.nodes[node]
-            agents_list.append({
+            agent = {
                 "id": node,
                 "role": data.get("role", "generic"),
                 "mode": data.get("mode", "agent"),
                 "objective": data.get("objective"),
-            })
+            }
+            if data.get("exec_type"):
+                agent["exec_type"] = data["exec_type"]
+            if data.get("skill"):
+                agent["skill"] = data["skill"]
+            if data.get("requirement"):
+                agent["requirement"] = data["requirement"]
+            if data.get("scope"):
+                agent["scope"] = data["scope"]
+            if data.get("params"):
+                agent["params"] = data["params"]
+            deps = list(dag.predecessors(node))
+            if deps:
+                agent["deps"] = deps
+            agents_list.append(agent)
 
     rules = get_rules()
     agents, batches = apply_rules(agents_list, batches_parallel, rules)

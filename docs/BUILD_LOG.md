@@ -30,7 +30,7 @@
 
 - **Local runner** — Invokes host cursor-cli (cursor-agent / agent / CURSOR_CLI_PATH); writes `task.json` in work dir; streams to `agent.log`; writes `result.json` on exit. Timeout 30 min. No autonomous merge.
 - **Docker runner** — Optional; container lifecycle via Docker SDK; same work-dir contract.
-- **Work dirs** — `workspace/works/{{task_name}}-{{run_id}}-{{role}}/` with `task.json`, `result.json`, `agent.log` (DESIGN §4.6).
+- **Work dirs** — `workspace/works/{{task_id}}-{{run_id}}-{{role}}/` with `task.json`, `result.json`, `agent.log` (DESIGN §4.6).
 - **Multi-step** — Steps with optional `validate_with`; broker can run validation sub-tasks directly (no agent shell). Progress used to skip completed steps.
 
 ### Validation & constraints

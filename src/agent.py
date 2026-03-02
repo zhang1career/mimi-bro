@@ -32,12 +32,12 @@ def fatal(msg: str, code=RET_ERR):
 
 def main():
     # ---- 读取环境变量 ----
-    # WORKSPACE = 工作路径（task.json, agent.log, works/）；RESOURCE = 资源路径（源代码等，供 cursor --workspace 使用）
+    # WORKSPACE = 工作路径（task.json, agent.log, works/）；SOURCE = 源代码路径（供 cursor --workspace 使用）
     agent_id = os.getenv('AGENT_ID', 'unknown')
     role = os.getenv('AGENT_ROLE', 'generic')
     task_id = os.getenv('TASK_ID', 'unknown')
     workspace = Path(os.getenv('WORKSPACE', '/workspace'))
-    resource = Path(os.getenv('RESOURCE', str(workspace)))
+    source = Path(os.getenv('SOURCE', str(workspace)))
     
     # Cursor API 认证信息（通过环境变量传递）
     cursor_api_key = os.getenv('CURSOR_API_KEY')
@@ -49,7 +49,7 @@ def main():
         log('[agent] warning: CURSOR_API_KEY not set, cursor-agent may require authentication')
     
     log(f'[agent] id={agent_id} role={role} task_id={task_id}')
-    log(f'[agent] workspace (work)={workspace} resource={resource}')
+    log(f'[agent] workspace (work)={workspace} source={source}')
 
     agents_dir = workspace / 'agents'
 
@@ -69,7 +69,7 @@ def main():
     if missing_deps:
         fatal(f'cursor cli dependencies missing: {", ".join(missing_deps)}', code=RET_INVALID_PARAM)
 
-    # --- 准备工作目录（Broker 可传 WORK_DIR_REL 如 works/{{task_name}}-{{task_id}}-{{role}}） ----
+    # --- 准备工作目录（Broker 可传 WORK_DIR_REL 如 works/{{task_id}}-{{run_id}}-{{role}}） ----
     work_dir_rel = os.getenv('WORK_DIR_REL', '').strip()
     if work_dir_rel:
         work_dir = workspace / work_dir_rel
@@ -85,7 +85,7 @@ def main():
     task = {}
     if task_file.exists():
         task = json.loads(task_file.read_text())
-        log(f'[agent] objective: {task.get('objective')}')
+        log(f'[agent] objective: {task.get("objective")}')
     if not task:
         fatal(f'task file not found or empty: {task_file}', code=RET_RESOURCE_NOT_FOUND)
 
@@ -117,8 +117,8 @@ def main():
     output_fmt = os.getenv('AGENT_OUTPUT_FORMAT', 'stream-json').strip().lower()
     if output_fmt not in ('text', 'stream-json'):
         output_fmt = 'stream-json'
-    # cursor-cli --workspace 使用资源路径（源代码等），工作路径仅用于 task.json/agent.log/works/
-    resource_entry = resource / entrypoint
+    # cursor-cli --workspace 使用源代码路径，工作路径仅用于 task.json/agent.log/works/
+    source_entry = source / entrypoint
     cmd = [
         str(cursor_bin),
         'run',
@@ -126,10 +126,10 @@ def main():
         '-f',
         '--output-format', output_fmt,
         '--mode', mode,
-        '--workspace', str(resource_entry),
+        '--workspace', str(source_entry),
         prompt
     ]
-    log(f'[agent] cmd: {' '.join(cmd)}')
+    log(f'[agent] cmd: {" ".join(cmd)}')
 
     # --- 调用 cursor cli（完整日志写 agent.log；控制台仅输出 type=="result" 的 result 字段） ----
     CURSOR_CLI_TIMEOUT = 1800  # 30 min
@@ -155,7 +155,7 @@ def main():
     try:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(resource),
+            cwd=str(source),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -179,14 +179,14 @@ def main():
             proc.kill()
             proc.wait()
         fatal('cursor cli timeout', code=RET_THREAD_TIMEOUT)
-    except Exception as e:
+    except Exception as _e:
         if proc and proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
-        log(f'[agent] cursor cli exception: {e}')
+        log(f'[agent] cursor cli exception: {_e}')
         if log_file.exists():
             log_content = log_file.read_text()
             if log_content:

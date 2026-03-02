@@ -1,0 +1,28 @@
+{
+  "worker": {
+    "id": "test-manager",
+    "objective": "Analyze and execute test scenario: {{requirement}}",
+    "instructions": [
+      "The requirement is provided in the objective above. Do NOT search for requirement files in the repository.",
+      "Parse the requirement and determine what needs to be done.",
+      "Write breakdown.json with format [{\"id\": \"<subtask-id>\", \"skill\": \"test-worker\", \"requirement\": \"...\"}, ...] for each sub-task.",
+      "Mark agent output as generated."
+    ],
+    "entrypoint": "."
+  },
+  "skill_refs": [
+    "test-worker"
+  ],
+  "plans": [
+    { "id": "agent-manager", "role": "manager", "mode": "agent" }
+  ],
+  "params": {
+    "requirement": "Describe the test scenario"
+  },
+  "steps": {
+    "agent-manager": [
+      { "id": "analyze", "objective": "Analyze requirement and plan sub-tasks." },
+      { "id": "breakdown", "objective": "Write breakdown.json for broker to invoke test-worker skill." }
+    ]
+  }
+}

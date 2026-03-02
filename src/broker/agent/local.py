@@ -62,17 +62,19 @@ def run_local(
     workspace: Path,
     work_dir: Path,
     cursor_bin: Path | None = None,
-    resource: Path | None = None,
+    source: Path | None = None,
     verbose: bool = True,
+    cursor_api_key: str | None = None,
 ) -> int:
     """
     Read task.json from work_dir, run cursor-cli on the host, write result.json.
-    workspace: work path (task.json, works/). resource: path for cursor --workspace; default = workspace.
+    workspace: work path (task.json, works/). source: path for cursor --workspace; default = workspace.
+    cursor_api_key: Cursor API key passed via --api-key (avoids keychain issues in parallel execution).
     Returns cursor-cli exit code (0 = success).
     """
     work_dir = work_dir.resolve()
     workspace = workspace.resolve()
-    res = (resource.resolve() if resource else workspace)
+    src = (source.resolve() if source else workspace)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     resolved, use_run = _resolve_cursor_bin(cursor_bin, workspace)
@@ -110,25 +112,32 @@ def run_local(
         for i in instructions:
             prompt += f"- {i}\n"
 
-    _log(f"workspace (work)={workspace} resource={res} work_dir={work_dir}", verbose)
+    _log(f"workspace (work)={workspace} source={src} work_dir={work_dir}", verbose)
     _log(f"objective: {objective[:80]}..." if len(objective) > 80 else f"objective: {objective}", verbose)
     output_fmt = os.getenv("AGENT_OUTPUT_FORMAT", "stream-json").strip().lower()
     if output_fmt not in ("text", "stream-json"):
         output_fmt = "stream-json"
 
+    if cursor_api_key:
+        _log(f"CURSOR_API_KEY provided (length={len(cursor_api_key)})", verbose)
+    else:
+        _log("WARNING: CURSOR_API_KEY not provided", verbose)
+
     # cursor-agent/agent: no "run" subcommand; cursor (editor/workspace script): use "run"
     cmd = [str(cursor_bin)]
     if use_run:
         cmd.append("run")
+    if cursor_api_key:
+        cmd.extend(["--api-key", cursor_api_key])
     cmd.extend([
         "-p",
         "-f",
         "--output-format", output_fmt,
         "--mode", mode,
-        "--workspace", str(res / entrypoint),
+        "--workspace", str(src / entrypoint),
         prompt,
     ])
-    _log(f"cmd: {' '.join(cmd)}", verbose)
+    _log(f"cmd: {' '.join(cmd[:10])}...", verbose)
 
     proc = None
 
@@ -152,7 +161,7 @@ def run_local(
     try:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(res),
+            cwd=str(src),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -197,8 +206,13 @@ def run_local(
 
     if code != 0 and log_file.exists():
         _log(f"cursor cli output saved to {log_file}", verbose)
+        log_content = log_file.read_text()
+        if "Password not found for account" in log_content and "cursor-access-token" in log_content:
+            _log("ERROR: Cursor keychain authentication failed", verbose)
+            _log("hint: Set CURSOR_API_KEY environment variable to avoid keychain issues", verbose)
+            _log("hint: export CURSOR_API_KEY='your-api-key' or add to .env file", verbose)
         if os.getenv("AGENT_LOG") == "1":
-            sys.stdout.write(log_file.read_text())
+            sys.stdout.write(log_content)
             sys.stdout.flush()
 
     # token_usage: 当前 Cursor CLI stream-json 未暴露用量，预留字段；日后可填 {"input": n, "output": n} 等

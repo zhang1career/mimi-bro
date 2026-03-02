@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "alpha-modified",
+  "settings": {
+    "timeout": 60,
+    "retries": 3
+  }
+}

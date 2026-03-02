@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
 
-LOG = Path("logs/decisions.jsonl")
+from broker.utils.file_lock import locked_append
+from broker.utils.path_util import PROJECT_ROOT
+
+LOG = PROJECT_ROOT / "logs" / "decisions.jsonl"
 
 
 def record(decision: dict):
-    LOG.parent.mkdir(exist_ok=True)
-    with open(LOG, "a") as f:
-        f.write(json.dumps(decision) + "\n")
+    locked_append(LOG, json.dumps(decision))

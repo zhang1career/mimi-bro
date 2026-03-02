@@ -57,7 +57,12 @@ def _get_know_api_url() -> str:
 
 
 def _fetch_some_like(summary: str) -> list[dict[str, Any]]:
-    """调用 GET /knowledge/some_like?summary=... 返回知识列表"""
+    """
+    调用 GET /knowledge/some_like?summary=... 返回知识列表。
+
+    注意：此接口仅用于 main.py 中的业务命令（语义搜索）。
+    后台命令（如 skill sync）应使用 _fetch_by_title() 按 title 精确查询。
+    """
     base = _get_know_api_url()
     q = summary.strip()
     if not q:
@@ -83,10 +88,44 @@ def _fetch_some_like(summary: str) -> list[dict[str, Any]]:
     return items
 
 
+def _fetch_by_title(title: str) -> list[dict[str, Any]]:
+    """
+    调用 GET /knowledge?title=... 按标题前缀匹配查询。
+
+    用于后台命令（如 skill sync, skill list）按 skill_id 精确查询。
+    title 参数会进行左对齐前缀匹配。
+    """
+    base = _get_know_api_url()
+    t = title.strip()
+    if not t:
+        return []
+    encoded = urllib.parse.quote(t, safe="")
+    url = f"{base}/knowledge?title={encoded}&limit=100"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"知识库 API 调用失败: {url} - {e}") from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"知识库 API 响应解析失败: {e}") from e
+
+    if data.get("errorCode") != 0:
+        raise RuntimeError(
+            f"知识库 API 返回错误: {data.get('message', 'unknown')}"
+        )
+    result = data.get("data")
+    if isinstance(result, dict):
+        items = result.get("data")
+        if isinstance(items, list):
+            return items
+    return []
+
+
 def _api_request(
-    method: str,
-    path: str,
-    body: dict[str, Any] | None = None,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """发起知识库 API 请求。path 不含前缀 /api/know。"""
     base = _get_know_api_url()
@@ -116,10 +155,10 @@ def _api_request(
 
 
 def create_skill(
-    title: str,
-    description: str | None = None,
-    content: str | None = None,
-    source_type: str = "mimi-bro",
+        title: str,
+        description: str | None = None,
+        content: str | None = None,
+        source_type: str = "mimi-bro",
 ) -> dict[str, Any]:
     """创建技能（对应 POST /knowledge）。无需人工确认。"""
     title = (title or "").strip()
@@ -145,12 +184,12 @@ def create_skill(
 
 
 def update_skill(
-    entity_id: int,
-    *,
-    title: str | None = None,
-    description: str | None = None,
-    content: str | None = None,
-    source_type: str | None = None,
+        entity_id: int,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        content: str | None = None,
+        source_type: str | None = None,
 ) -> dict[str, Any]:
     """更新技能（对应 PUT /knowledge/{entity_id}）。调用前需人工确认。"""
     payload: dict[str, Any] = {}
@@ -188,23 +227,42 @@ def get_skill_entity_id(skill_id: str) -> int:
 
 
 def _knowledge_to_entry(knowledge: dict) -> dict[str, Any]:
-    """从知识条目解析出 skill entry（executors, invocation）"""
+    """
+    从知识条目解析出 skill entry。
+
+    knowledge 字段映射（见 docs/SKILL.md）：
+    - title → skill.id
+    - content → skill.description（文字描述）
+    - description → JSON {match_rules, invocation, executors}
+
+    返回合并后的 entry：{
+        "id": str,
+        "description": str,  # 文字描述
+        "match_rules": dict | None,
+        "invocation": dict | None,
+        "executors": dict | None,
+    }
+    """
+    skill_id = knowledge.get("title") or ""
+    text_description = knowledge.get("content") or ""
+
     desc = knowledge.get("description")
-    if not desc or not isinstance(desc, str):
-        raise ValueError(
-            f"知识条目 title={knowledge.get('title')} 的 description 为空或非字符串"
-        )
-    try:
-        parsed = json.loads(desc)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"知识条目 title={knowledge.get('title')} 的 description 不是有效 JSON: {e}"
-        ) from e
-    if not isinstance(parsed, dict):
-        raise ValueError(
-            f"知识条目 title={knowledge.get('title')} 的 description 必须为 JSON 对象"
-        )
-    return parsed
+    parsed: dict[str, Any] = {}
+    if desc and isinstance(desc, str):
+        try:
+            parsed = json.loads(desc)
+            if not isinstance(parsed, dict):
+                parsed = {}
+        except json.JSONDecodeError:
+            parsed = {}
+
+    return {
+        "id": skill_id,
+        "description": text_description,
+        "match_rules": parsed.get("match_rules"),
+        "invocation": parsed.get("invocation"),
+        "executors": parsed.get("executors"),
+    }
 
 
 class SkillNotFoundError(RuntimeError):
@@ -212,8 +270,7 @@ class SkillNotFoundError(RuntimeError):
 
 
 def load_skill_registry(
-    path: str | Path | None = None,
-    skill_refs: list[str] | None = None,
+        skill_refs: list[str] | None = None,
 ) -> _SkillRegistry:
     """从知识库 API 加载技能，初始化内部缓存。
     skill_refs: 要加载的技能 ID 列表，按 summary 查询（如 [backend-dev]）；缺省时用 mimi-bro 拉全量（兼容旧行为）。
@@ -305,6 +362,32 @@ def list_skills() -> list[str]:
     return list(_ensure_loaded().keys())
 
 
+def get_skill_info(skill_id: str) -> dict[str, Any]:
+    """
+    获取 skill 的完整信息。
+
+    Returns:
+        {
+            "id": str,
+            "description": str,  # 文字描述
+            "match_rules": dict | None,
+            "invocation": dict | None,
+            "executors": dict | None,
+        }
+    """
+    return _ensure_skill(skill_id)
+
+
+def get_all_skill_infos() -> dict[str, dict[str, Any]]:
+    """
+    获取所有已加载 skill 的完整信息。
+
+    Returns:
+        {skill_id: skill_info, ...}
+    """
+    return dict(_ensure_loaded())
+
+
 def _executors_for_skill(skill: str) -> dict[str, Any]:
     """获取技能对应的执行者映射。"""
     entry = _ensure_skill(skill)
@@ -346,9 +429,9 @@ def _substitute_placeholders(val: Any, ctx: dict[str, str]) -> Any:
 
 
 def get_invocation(
-    skill: str,
-    src_path: str = "src",
-    **params: str,
+        skill: str,
+        src_path: str = "src",
+        **params: str,
 ) -> str | dict[str, Any] | None:
     """
     查询某技能的调用方法。返回类型因 invocation.type 而异：
@@ -370,44 +453,56 @@ def get_invocation(
     inv_type = inv.get("type", "bro_submit")
 
     if inv_type == "bro_submit":
-        task_file = inv.get("task_file")
-        if not task_file:
-            return None
-        parts = ["bro", "submit", task_file]
-        if inv.get("local"):
-            parts.append("--local")
-        ws = inv.get("workspace")
-        if ws:
-            parts.extend(["-w", _substitute_placeholders(ws, ctx)])
-        res = _substitute_placeholders(inv.get("resource", "{src_path}"), ctx)
-        parts.extend(["-s", res])
-        for k, v in params.items():
-            parts.extend(["--arg", f"{k}={shlex.quote(v)}"])
-        return " ".join(parts)
+        return _parse_bro_submit(ctx, inv, params)
 
     if inv_type == "shell":
-        template = inv.get("template")
-        if not template:
-            return None
-        return _substitute_placeholders(template, ctx)
+        return _parse_shell(ctx, inv)
 
     if inv_type == "http":
-        method = inv.get("method", "GET")
-        url = inv.get("url")
-        if not url:
-            return None
-        result: dict[str, Any] = {
-            "method": method,
-            "url": _substitute_placeholders(url, ctx),
-        }
-        if "headers" in inv:
-            result["headers"] = _substitute_placeholders(dict(inv["headers"]), ctx)
-        if "body" in inv:
-            body = inv["body"]
-            if isinstance(body, (dict, list)):
-                result["body"] = _substitute_placeholders(body, ctx)
-            else:
-                result["body"] = _substitute_placeholders(str(body), ctx)
-        return result
+        return _parse_http(ctx, inv)
 
     return None
+
+
+def _parse_bro_submit(ctx, inv, params):
+    task_file = inv.get("task_file")
+    if not task_file:
+        return None
+    parts = ["bro", "submit", task_file]
+    if inv.get("local"):
+        parts.append("--local")
+    ws = inv.get("workspace")
+    if ws:
+        parts.extend(["-w", _substitute_placeholders(ws, ctx)])
+    res = _substitute_placeholders(inv.get("source", "{src_path}"), ctx)
+    parts.extend(["-s", res])
+    for k, v in params.items():
+        parts.extend(["--arg", f"{k}={shlex.quote(v)}"])
+    return " ".join(parts)
+
+
+def _parse_shell(ctx, inv):
+    template = inv.get("template")
+    if not template:
+        return None
+    return _substitute_placeholders(template, ctx)
+
+
+def _parse_http(ctx, inv):
+    method = inv.get("method", "GET")
+    url = inv.get("url")
+    if not url:
+        return None
+    result: dict[str, Any] = {
+        "method": method,
+        "url": _substitute_placeholders(url, ctx),
+    }
+    if "headers" in inv:
+        result["headers"] = _substitute_placeholders(dict(inv["headers"]), ctx)
+    if "body" in inv:
+        body = inv["body"]
+        if isinstance(body, (dict, list)):
+            result["body"] = _substitute_placeholders(body, ctx)
+        else:
+            result["body"] = _substitute_placeholders(str(body), ctx)
+    return result

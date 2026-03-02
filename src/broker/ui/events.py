@@ -13,7 +13,7 @@ def emit_progress(
     parent_total: int,
     child_tasks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build progress event. child_tasks = [{task_id, current, total, color}, ...]"""
+    """Build progress event. child_tasks = [{subtask_id, current, total, color}, ...]"""
     evt: dict[str, Any] = {
         "type": "progress",
         "parent": {"current": parent_current, "total": parent_total},
@@ -32,7 +32,7 @@ def emit_task_tree(nodes: list[dict[str, Any]], running_ids: set[str] | None = N
 
 
 def emit_log_paths(paths: list[dict[str, Any]], lines_per_file: int = 3) -> dict[str, Any]:
-    """Build log paths event. paths = [{path, task_id?, role?}, ...]"""
+    """Build log paths event. paths = [{path, worker_id?, role?}, ...]"""
     return {
         "type": "log_paths",
         "paths": paths,
@@ -41,7 +41,7 @@ def emit_log_paths(paths: list[dict[str, Any]], lines_per_file: int = 3) -> dict
 
 
 def emit_task_assigned(
-    task_id: str,
+    worker_id: str,
     objective_preview: str,
     assignee: str | None = None,
     subtask_id: str | None = None,
@@ -49,7 +49,7 @@ def emit_task_assigned(
     """Build task assigned event."""
     evt: dict[str, Any] = {
         "type": "task_assigned",
-        "task_id": task_id,
+        "worker_id": worker_id,
         "objective_preview": objective_preview,
     }
     if assignee:
@@ -60,7 +60,7 @@ def emit_task_assigned(
 
 
 def emit_result(
-    task_id: str,
+    worker_id: str,
     role: str,
     status: str,
     work_dir: str,
@@ -69,7 +69,7 @@ def emit_result(
     """Build result event."""
     evt: dict[str, Any] = {
         "type": "result",
-        "task_id": task_id,
+        "worker_id": worker_id,
         "role": role,
         "status": status,
         "work_dir": str(work_dir),
@@ -95,6 +95,62 @@ def emit_status(message: str, elapsed_seconds: float | None = None) -> dict[str,
 def emit_console(message: str) -> dict[str, Any]:
     """Build console message event: broker-level info (e.g. skill API result, choice)."""
     return {"type": "console", "message": message}
+
+
+def emit_confirm_deps_request(
+    request_id: str,
+    graph_text: str,
+    nodes: list[str],
+    edges: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """Build dependency confirmation request event.
+
+    Args:
+        request_id: Unique ID for this request (for matching response)
+        graph_text: Human-readable dependency graph text
+        nodes: List of node IDs
+        edges: List of (from_id, to_id) tuples
+    """
+    return {
+        "type": "confirm_deps_request",
+        "request_id": request_id,
+        "graph_text": graph_text,
+        "nodes": nodes,
+        "edges": [(e[0], e[1]) for e in edges],
+    }
+
+
+def emit_confirm_skills_request(
+    request_id: str,
+    items: list[dict[str, Any]],
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """Build skill selection confirmation request event.
+
+    Args:
+        request_id: Unique ID for this request (for matching response)
+        items: List of items to confirm, each with:
+            - item_id: Subtask ID
+            - requirement: Brief description
+            - current_skill: Currently selected skill ID
+            - available_skills: List of available skill IDs
+            - source: How skill was selected ("rule", "agent", "default")
+        timeout_seconds: Seconds before auto-confirm (default 60)
+    """
+    return {
+        "type": "confirm_skills_request",
+        "request_id": request_id,
+        "items": items,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def emit_confirm_skills_timeout(request_id: str) -> dict[str, Any]:
+    """Build skill confirmation timeout event (auto-confirm triggered)."""
+    return {
+        "type": "confirm_skills_timeout",
+        "request_id": request_id,
+    }
 
 
 def to_jsonl(event: dict[str, Any]) -> str:

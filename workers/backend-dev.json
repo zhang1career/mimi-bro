@@ -18,10 +18,12 @@
     "scope": "src",
     "requirement": "Describe the backend feature: e.g. new API endpoint, database model, service, or business logic."
   },
-  "steps": [
-    { "id": "scope", "objective": "Confirm scope: API endpoints, database models, services, and dependencies from the requirement." },
-    { "id": "implement", "objective": "Implement backend logic: API routes, database operations, services; test endpoints to verify." },
-    { "id": "validate", "objective": "Add input validation, error handling, and edge case coverage." },
-    { "id": "report", "objective": "Report what was created or changed; ensure output is marked generated." }
-  ]
+  "steps": {
+    "agent-backend": [
+      { "id": "scope", "objective": "Confirm scope: API endpoints, database models, services, and dependencies from the requirement." },
+      { "id": "implement", "objective": "Implement backend logic: API routes, database operations, services; test endpoints to verify." },
+      { "id": "validate", "objective": "Add input validation, error handling, and edge case coverage." },
+      { "id": "report", "objective": "Report what was created or changed; ensure output is marked generated." }
+    ]
+  }
 }

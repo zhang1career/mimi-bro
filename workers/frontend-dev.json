@@ -16,9 +16,11 @@
     "scope": "src",
     "requirement": "Describe the frontend feature: e.g. new page, component, or user flow."
   },
-  "steps": [
-    { "id": "scope", "objective": "Confirm scope: components, pages, and data/API touchpoints from the requirement." },
-    { "id": "implement", "objective": "Implement UI and wire state/API; run the app to verify." },
-    { "id": "report", "objective": "Report what was created or changed; ensure output is marked generated." }
-  ]
+  "steps": {
+    "agent-frontend": [
+      { "id": "scope", "objective": "Confirm scope: components, pages, and data/API touchpoints from the requirement." },
+      { "id": "implement", "objective": "Implement UI and wire state/API; run the app to verify." },
+      { "id": "report", "objective": "Report what was created or changed; ensure output is marked generated." }
+    ]
+  }
 }

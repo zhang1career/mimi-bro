@@ -1,0 +1,19 @@
+{
+  "worker": {
+    "id": "test-worker",
+    "objective": "Execute test task: {{requirement}}. Report what you did.",
+    "instructions": [
+      "The requirement is provided in the objective above. Do NOT search for requirement files in the repository.",
+      "Execute the task as specified in the requirement.",
+      "Report the result clearly.",
+      "Mark agent output as generated."
+    ],
+    "entrypoint": "."
+  },
+  "plans": [
+    { "id": "agent-test", "role": "tester", "mode": "agent" }
+  ],
+  "params": {
+    "requirement": "Describe the test task"
+  }
+}
