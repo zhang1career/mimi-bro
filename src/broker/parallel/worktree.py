@@ -343,6 +343,108 @@ class GitWorktree:
                 pass
 
 
+@dataclass
+class AutoCommitResult:
+    """自动提交结果"""
+
+    success: bool
+    commit_sha: str = ""
+    message: str = ""
+    files_changed: int = 0
+    skipped: bool = False
+
+
+def auto_commit_changes(
+    worktree_path: Path,
+    run_id: str,
+    role: str,
+    objective: str = "",
+    requirement: str = "",
+    max_message_length: int = 72,
+) -> AutoCommitResult:
+    """
+    自动提交 worktree 中的所有变更。
+
+    Args:
+        worktree_path: worktree 路径
+        run_id: 运行 ID
+        role: 角色名
+        objective: 任务目标（用于 commit message）
+        requirement: 任务需求（用于 commit message）
+        max_message_length: commit message 第一行最大长度
+
+    Returns:
+        AutoCommitResult 对象
+    """
+    def run_git(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git"] + args,
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    try:
+        diff_result = run_git(["diff", "--quiet"], check=False)
+        diff_staged_result = run_git(["diff", "--cached", "--quiet"], check=False)
+        status_result = run_git(["status", "--porcelain"], check=False)
+
+        has_unstaged = diff_result.returncode != 0
+        has_staged = diff_staged_result.returncode != 0
+        has_untracked = any(
+            line.startswith("??") for line in status_result.stdout.splitlines()
+        )
+
+        if not has_unstaged and not has_staged and not has_untracked:
+            return AutoCommitResult(
+                success=True,
+                skipped=True,
+                message="No changes to commit",
+            )
+
+        run_git(["add", "-A"])
+
+        desc = objective or requirement or "auto commit"
+        desc = desc.replace("\n", " ").strip()
+        prefix = f"[{run_id[:8]}][{role}] "
+        available_len = max_message_length - len(prefix)
+        if len(desc) > available_len:
+            desc = desc[: available_len - 3] + "..."
+        commit_msg = f"{prefix}{desc}"
+
+        run_git(["commit", "-m", commit_msg])
+
+        sha_result = run_git(["rev-parse", "HEAD"])
+        commit_sha = sha_result.stdout.strip()
+
+        shortstat = run_git(["diff", "--shortstat", "HEAD~1", "HEAD"], check=False)
+        files_changed = 0
+        if shortstat.stdout:
+            import re
+            match = re.search(r"(\d+) file", shortstat.stdout)
+            if match:
+                files_changed = int(match.group(1))
+
+        return AutoCommitResult(
+            success=True,
+            commit_sha=commit_sha,
+            message=commit_msg,
+            files_changed=files_changed,
+        )
+
+    except subprocess.CalledProcessError as e:
+        return AutoCommitResult(
+            success=False,
+            message=f"Git error: {e.stderr.strip() if e.stderr else str(e)}",
+        )
+    except Exception as e:
+        return AutoCommitResult(
+            success=False,
+            message=f"Error: {str(e)}",
+        )
+
+
 def _convert_gitfile_to_relative(worktree_path: Path) -> None:
     """将 worktree 的 .git 文件从绝对路径转为相对路径（便于 Docker 挂载）"""
     git_file = worktree_path / ".git"

@@ -289,12 +289,14 @@ class DependencyConfirmDialog(DialogBase, can_focus=True):
         self.hide()
         self._send_response()
         self._restore_focus()
+        self.remove()
 
     def action_cancel(self) -> None:
         self._confirmed = False
         self.hide()
         self._send_response()
         self._restore_focus()
+        self.remove()
 
     def _restore_focus(self) -> None:
         """Restore focus to task tree after dialog closes."""
@@ -490,6 +492,7 @@ class SkillConfirmDialog(DialogBase, can_focus=True):
             self.hide()
             self._send_response()
             self._restore_focus()
+            self.remove()
         else:
             self._refresh_display()
 
@@ -573,6 +576,7 @@ class SkillConfirmDialog(DialogBase, can_focus=True):
         self.hide()
         self._send_response()
         self._restore_focus()
+        self.remove()
 
     def action_cancel(self) -> None:
         if self._timer_handle:
@@ -581,6 +585,7 @@ class SkillConfirmDialog(DialogBase, can_focus=True):
         self.hide()
         self._send_response()
         self._restore_focus()
+        self.remove()
 
     def _restore_focus(self) -> None:
         try:
@@ -976,6 +981,8 @@ class SubmitTUI(App):
             self._show_skill_confirm_dialog(evt)
         elif t == "confirm_skills_timeout":
             self._append_console("Skill selection timeout, auto-confirmed")
+        elif t == "run_external_request":
+            self._handle_run_external(evt)
         elif t == "done":
             self._broker_done = True
 
@@ -1140,6 +1147,36 @@ class SubmitTUI(App):
         self._confirm_dialog.show()
         self._confirm_dialog.focus()
         self._append_console("[DEBUG] Dialog shown, press Enter/A to confirm or Esc/N to cancel")
+
+    def _handle_run_external(self, evt: dict) -> None:
+        """Handle external command request by suspending TUI and running the command."""
+        request_id = evt.get("request_id", "")
+        args = evt.get("args", [])
+        cwd = evt.get("cwd")
+
+        if not args:
+            self._send_external_response(request_id, 1)
+            return
+
+        self._append_console(f"[mergetool] Launching: {' '.join(args)}")
+
+        exit_code = 1
+        try:
+            with self.suspend():
+                result = subprocess.run(args, cwd=cwd, check=False)
+                exit_code = result.returncode
+        except Exception as e:
+            self._append_console(f"[mergetool] Error: {e}")
+            exit_code = 1
+
+        self._send_external_response(request_id, exit_code)
+        self._append_console(f"[mergetool] Completed with exit code {exit_code}")
+
+    def _send_external_response(self, request_id: str, exit_code: int) -> None:
+        """Send response for external command request."""
+        if hasattr(self, "_broker_driver") and self._broker_driver is not None:
+            result = {"exit_code": exit_code}
+            self._broker_driver.handle_confirm_response(request_id, result)
 
     def _show_skill_confirm_dialog(self, evt: dict) -> None:
         """Show skill selection confirmation dialog with timeout."""

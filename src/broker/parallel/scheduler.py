@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from broker.parallel.analyzer import DependencyGraph
-from broker.parallel.worktree import GitWorktree, WorktreeInfo
+from broker.parallel.worktree import GitWorktree, WorktreeInfo, auto_commit_changes
 from broker.model.plan_item import PlanItemType, get_plan_item_type
 
 
@@ -294,6 +294,19 @@ class ParallelScheduler:
             worktree_path = Path(worktree_info.worktree_path)
 
             exit_code = invoke_func(subtask, worktree_path)
+
+            if exit_code == 0:
+                commit_result = auto_commit_changes(
+                    worktree_path=worktree_path,
+                    run_id=self.run_id,
+                    role=subtask.role or subtask.id,
+                    objective=subtask.objective,
+                    requirement=subtask.requirement,
+                )
+                if not commit_result.success and not commit_result.skipped:
+                    exit_code = 1
+                    with self._lock:
+                        subtask.error_message = f"Auto-commit failed: {commit_result.message}"
 
             with self._lock:
                 subtask.exit_code = exit_code

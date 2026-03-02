@@ -645,6 +645,11 @@ def _execute_parallel_items(
 
         merger = ResultMerger(scheduler_workspace, state, confirmed_graph)
 
+        def run_external_fn(args: list[str], cwd) -> int:
+            return drv.run_external_command(args, cwd)
+
+        merger.set_run_external_fn(run_external_fn)
+
         def message_callback(msg: str) -> None:
             drv.on_console_message(msg)
 

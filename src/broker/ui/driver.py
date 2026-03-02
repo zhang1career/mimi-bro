@@ -112,6 +112,28 @@ class DisplayDriver:
         """
         return {item["item_id"]: item["current_skill"] for item in items}
 
+    def run_external_command(
+        self,
+        args: list[str],
+        cwd: str | Path | None = None,
+    ) -> int:
+        """Run an external command that requires exclusive terminal access.
+
+        This method is used for interactive terminal programs like git mergetool/vimdiff
+        that need full terminal control. TUI implementations should suspend the UI
+        before running the command.
+
+        Args:
+            args: Command and arguments to run
+            cwd: Working directory for the command
+
+        Returns:
+            Exit code of the command
+        """
+        import subprocess
+        result = subprocess.run(args, cwd=str(cwd) if cwd else None, check=False)
+        return result.returncode
+
 
 class NullDriver(DisplayDriver):
     """No-op driver for testing or when display is disabled."""
@@ -416,6 +438,36 @@ class CLIDriver(DisplayDriver):
             return {item["item_id"]: item["current_skill"] for item in items}
 
         return result.get("skills", {item["item_id"]: item["current_skill"] for item in items})
+
+    def run_external_command(
+        self,
+        args: list[str],
+        cwd: str | Path | None = None,
+    ) -> int:
+        """Run an external command that requires exclusive terminal access.
+
+        Sends a request to TUI to suspend and run the command.
+        """
+        request_id = str(uuid.uuid4())
+
+        wait_event = threading.Event()
+        self._pending_confirms[request_id] = wait_event
+
+        evt = events.emit_run_external_request(
+            request_id,
+            args,
+            str(cwd) if cwd else None,
+        )
+        self._queue.put(evt)
+
+        wait_event.wait(timeout=600.0)
+
+        result = self._confirm_results.pop(request_id, None)
+        self._pending_confirms.pop(request_id, None)
+
+        if result is None:
+            return 1
+        return result.get("exit_code", 1)
 
     def run_with(self, broker_fn: Callable[[], None]) -> None:
         """Run broker_fn in background thread and TUI in foreground."""

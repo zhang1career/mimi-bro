@@ -153,6 +153,31 @@ def emit_confirm_skills_timeout(request_id: str) -> dict[str, Any]:
     }
 
 
+def emit_run_external_request(
+    request_id: str,
+    args: list[str],
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    """Build external command request event.
+
+    Used for interactive terminal programs (like git mergetool/vimdiff) that need
+    exclusive terminal access. The TUI should suspend before running.
+
+    Args:
+        request_id: Unique ID for this request (for matching response)
+        args: Command and arguments to run
+        cwd: Working directory for the command
+    """
+    evt: dict[str, Any] = {
+        "type": "run_external_request",
+        "request_id": request_id,
+        "args": args,
+    }
+    if cwd:
+        evt["cwd"] = cwd
+    return evt
+
+
 def to_jsonl(event: dict[str, Any]) -> str:
     """Serialize event to JSONL line."""
     return json.dumps(event, ensure_ascii=False) + "\n"

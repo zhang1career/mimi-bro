@@ -5,16 +5,24 @@
 - 拓扑排序确定合并顺序
 - 检测冲突并暂停
 - 支持清理 worktree 和分支
+- TTY 检测：非交互环境自动 fallback 保留冲突标记
 """
 
 from __future__ import annotations
 
+import os
+import sys
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
+
+
+def is_interactive_tty() -> bool:
+    """检测是否为交互式 TTY 环境"""
+    return sys.stdin.isatty() and sys.stdout.isatty() and os.isatty(0)
 
 from broker.parallel.analyzer import DependencyGraph
 from broker.parallel.scheduler import (
@@ -102,6 +110,7 @@ class ResultMerger:
         self.dep_graph = dep_graph
         self.git = GitWorktree(workspace)
         self._conflict_callback: Callable[[MergeResult], bool] | None = None
+        self._run_external_fn: Callable[[list[str], Path | None], int] | None = None
 
     def set_conflict_callback(
         self,
@@ -188,21 +197,41 @@ class ResultMerger:
                 conflict_files.append(line[3:].strip())
         return conflict_files
 
+    def set_run_external_fn(
+        self,
+        fn: Callable[[list[str], Path | None], int],
+    ) -> None:
+        """
+        设置外部命令运行函数。
+
+        用于在 TUI 环境中暂停界面后运行外部命令（如 vimdiff）。
+        """
+        self._run_external_fn = fn
+
     def _run_mergetool(self) -> bool:
         """
         启动 git mergetool GUI。
 
         不捕获输出，让交互式工具（如 vimdiff）正常显示。
+        在非 TTY 环境下不执行，直接返回 False。
 
         Returns:
             True 如果 mergetool 成功退出，False 否则
         """
-        result = subprocess.run(
-            ["git", "mergetool"],
-            cwd=str(self.workspace),
-            check=False,
-        )
-        return result.returncode == 0
+        if not is_interactive_tty():
+            return False
+
+        args = ["git", "mergetool"]
+        if self._run_external_fn is not None:
+            exit_code = self._run_external_fn(args, self.workspace)
+            return exit_code == 0
+        else:
+            result = subprocess.run(
+                args,
+                cwd=str(self.workspace),
+                check=False,
+            )
+            return result.returncode == 0
 
     def _stage_resolved_files(self) -> bool:
         """
@@ -324,22 +353,29 @@ class ResultMerger:
 
             if result.status == MergeStatus.CONFLICT:
                 if interactive:
-                    msg(f"Conflict in {subtask_id}:")
-                    resolved = self._resolve_conflicts_interactive(result, message_callback)
-                    if resolved:
-                        self._stage_resolved_files()
-                        if self._continue_cherry_pick():
-                            result.status = MergeStatus.MERGED
-                            result.commit_sha = self._get_head_sha()
-                            result.conflict_files = []
-                            msg(f"✓ {subtask_id} merged successfully")
+                    if is_interactive_tty():
+                        msg(f"Conflict in {subtask_id}:")
+                        resolved = self._resolve_conflicts_interactive(result, message_callback)
+                        if resolved:
+                            self._stage_resolved_files()
+                            if self._continue_cherry_pick():
+                                result.status = MergeStatus.MERGED
+                                result.commit_sha = self._get_head_sha()
+                                result.conflict_files = []
+                                msg(f"✓ {subtask_id} merged successfully")
+                            else:
+                                msg(f"✗ {subtask_id} cherry-pick continue failed")
+                                self._abort_cherry_pick()
+                                break
                         else:
-                            msg(f"✗ {subtask_id} cherry-pick continue failed")
+                            msg(f"✗ {subtask_id} conflicts not resolved, aborting")
                             self._abort_cherry_pick()
                             break
                     else:
-                        msg(f"✗ {subtask_id} conflicts not resolved, aborting")
-                        self._abort_cherry_pick()
+                        msg(f"⚠ Conflict in {subtask_id} (non-TTY, conflict markers preserved):")
+                        for f in result.conflict_files:
+                            msg(f"  - {f}")
+                        msg("Run 'git mergetool' manually to resolve, then 'git cherry-pick --continue'")
                         break
                 elif self._conflict_callback:
                     resolved = self._conflict_callback(result)

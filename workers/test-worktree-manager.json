@@ -8,46 +8,39 @@
       "The test creates parallel subtasks that modify the SAME file to cause merge conflicts.",
       "Each subtask runs in an isolated worktree branch.",
       "After all subtasks complete, the broker will attempt to cherry-pick merge all branches.",
+      "Git operations (branch, commit, merge) are handled automatically by the broker.",
       "Expected outcome: CONFLICT on tests/fixtures/worktree/shared_config.json"
     ],
     "entrypoint": "."
   },
-  "skill_refs": [
-    "test-git-committer"
-  ],
   "plans": [
     {
       "id": "setup-fixture",
       "role": "setup",
-      "skill": "test-git-committer",
-      "requirement": "OPERATION: Create | FILE: tests/fixtures/worktree/shared_config.json | CONTENT: set version=1, set name='original', set settings=( set timeout=30, set retries=3 )"
+      "requirement": "Create the file tests/fixtures/worktree/shared_config.json with this JSON content: {\"version\": 1, \"name\": \"original\", \"settings\": {\"timeout\": 30, \"retries\": 3}}. Use mkdir -p to create parent directories if needed."
     },
     {
       "id": "worker-alpha",
       "role": "modifier-alpha",
-      "skill": "test-git-committer",
-      "requirement": "OPERATION: Modify | FILE: tests/fixtures/worktree/shared_config.json | CHANGES: set name='alpha-modified', set settings.timeout=60 | ALSO CREATE: tests/fixtures/worktree/alpha_only.txt with content 'Created by alpha worker'",
+      "requirement": "Modify tests/fixtures/worktree/shared_config.json: change 'name' to 'alpha-modified' and 'settings.timeout' to 60. Also create tests/fixtures/worktree/alpha_only.txt with content 'Created by alpha worker'.",
       "deps": ["setup-fixture"]
     },
     {
       "id": "worker-beta",
       "role": "modifier-beta",
-      "skill": "test-git-committer",
-      "requirement": "OPERATION: Modify | FILE: tests/fixtures/worktree/shared_config.json | CHANGES: set name='beta-modified', set settings.retries=5 | ALSO CREATE: tests/fixtures/worktree/beta_only.txt with content 'Created by beta worker'",
+      "requirement": "Modify tests/fixtures/worktree/shared_config.json: change 'name' to 'beta-modified' and 'settings.retries' to 5. Also create tests/fixtures/worktree/beta_only.txt with content 'Created by beta worker'.",
       "deps": ["setup-fixture"]
     },
     {
       "id": "worker-gamma",
       "role": "modifier-gamma",
-      "skill": "test-git-committer",
-      "requirement": "OPERATION: Modify | FILE: tests/fixtures/worktree/shared_config.json | CHANGES: set version=2, add field modified_by='gamma' | ALSO CREATE: tests/fixtures/worktree/gamma_only.txt with content 'Created by gamma worker'",
+      "requirement": "Modify tests/fixtures/worktree/shared_config.json: change 'version' to 2 and add field 'modified_by': 'gamma'. Also create tests/fixtures/worktree/gamma_only.txt with content 'Created by gamma worker'.",
       "deps": ["setup-fixture"]
     },
     {
       "id": "verify-worktrees",
       "role": "verifier",
-      "skill": "test-git-committer",
-      "requirement": "OPERATION: Verify | COMMANDS: Run 'git worktree list' and 'git branch -a' in terminal, then commit a summary to git with message '[test][git] verified worktrees [agent output generated]'",
+      "requirement": "Run 'git worktree list' and 'git branch -a' to verify worktree setup, then report the results.",
       "deps": ["worker-alpha", "worker-beta", "worker-gamma"]
     }
   ],
