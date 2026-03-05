@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 # Debug: Print Python path and working directory
@@ -132,36 +133,42 @@ def main():
     log(f'[agent] cmd: {" ".join(cmd)}')
 
     # --- 调用 cursor cli（完整日志写 agent.log；控制台仅输出 type=="result" 的 result 字段） ----
+    # 避免 PIPE：stdout 直写文件，消除 pipe buffer 满导致 cursor 阻塞、进而被 kill 的可能
     CURSOR_CLI_TIMEOUT = 1800  # 30 min
     proc = None
 
-    def stream_output():
-        with log_file.open('w') as lf:
-            for line in proc.stdout:
-                line_ = line if line.endswith('\n') else line + '\n'
-                lf.write(line_)
-                lf.flush()
-                try:
-                    obj = json.loads(line.strip())
-                    if obj.get('type') == 'result':
-                        out = obj.get('result')
-                        if out is not None:
-                            text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
-                            sys.stdout.write(text if text.endswith('\n') else text + '\n')
-                            sys.stdout.flush()
-                except (json.JSONDecodeError, TypeError):
-                    pass
+    def tail_and_emit_results():
+        with log_file.open('r') as f:
+            while True:
+                line = f.readline()
+                if line:
+                    try:
+                        obj = json.loads(line.strip())
+                        if obj.get('type') == 'result':
+                            out = obj.get('result')
+                            if out is not None:
+                                text = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+                                sys.stdout.write(text if text.endswith('\n') else text + '\n')
+                                sys.stdout.flush()
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                elif proc.poll() is not None:
+                    break
+                else:
+                    time.sleep(0.05)
 
     try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(source),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        reader = threading.Thread(target=stream_output, daemon=True)
+        with log_file.open('w') as log_handle:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(source),
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+            )
+        reader = threading.Thread(target=tail_and_emit_results, daemon=True)
         reader.start()
         proc.wait(timeout=CURSOR_CLI_TIMEOUT)
     except KeyboardInterrupt:

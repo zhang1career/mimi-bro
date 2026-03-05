@@ -20,9 +20,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
+from broker.model.plan_item import PlanItemType, get_plan_item_type
 from broker.parallel.analyzer import DependencyGraph
 from broker.parallel.worktree import GitWorktree, WorktreeInfo, auto_commit_changes
-from broker.model.plan_item import PlanItemType, get_plan_item_type
+from broker.utils.work_util import task_slug
 
 
 class TaskStatus(str, Enum):
@@ -152,6 +153,7 @@ class ParallelScheduler:
             breakdown: list[dict[str, Any]],
             max_workers: int = 4,
             state_workspace: Path | None = None,
+            stagger_seconds: float = 5.0,
     ):
         self.workspace = Path(workspace).resolve()
         self.state_workspace = Path(state_workspace).resolve() if state_workspace else self.workspace
@@ -159,6 +161,7 @@ class ParallelScheduler:
         self.run_id = run_id
         self.dep_graph = dep_graph
         self.max_workers = max_workers
+        self.stagger_seconds = stagger_seconds
 
         self.state = ParallelExecutionState(run_id=run_id, worker_id=worker_id)
         self._init_subtasks(breakdown)
@@ -256,7 +259,7 @@ class ParallelScheduler:
         """为子任务创建 worktree"""
         git = GitWorktree(self.workspace)
         role = subtask.role or 'worker'
-        branch = f"{self.run_id}-{role}"
+        branch = task_slug(self.run_id, role)
         worktree_path = git.compute_worktree_path(branch, session_id=self.run_id[:8])
 
         existing = git.find_worktree_by_branch(branch)
@@ -361,8 +364,8 @@ class ParallelScheduler:
                 for i, subtask_id in enumerate(ready_tasks):
                     if len(self._futures) >= self.max_workers:
                         break
-                    if i > 0:
-                        time.sleep(5.0)
+                    if i > 0 and self.stagger_seconds > 0:
+                        time.sleep(self.stagger_seconds)
                     future = self._executor.submit(
                         self._run_subtask, subtask_id, invoke_func
                     )

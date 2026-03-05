@@ -1,0 +1,11 @@
+{
+  "worker": {
+    "id": "diag-say-hello-parallel",
+    "objective": "Diagnostic for 137 with parallel",
+    "entrypoint": "."
+  },
+  "plans": [
+    {"id": "a", "role": "a", "requirement": "say hello"},
+    {"id": "b", "role": "b", "requirement": "say hello"}
+  ]
+}

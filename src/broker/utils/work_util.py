@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from broker.model.task import get_task_block
 from broker.task_types import get_task_type_config
 
+# 任务唯一性约定：run_id + role
+# - 路径：{run_id}/{role} → task_path_rel, build_work_dir
+# - 命名：{run_id}-{role} → task_slug (容器、分支、文件)
 
 BREAKDOWN_JSON = "breakdown.json"
 RUN_META_FILE = "run_meta.json"
@@ -29,6 +33,37 @@ def build_work_dir(
     task_id 参数保留用于兼容，但不再用于目录名。
     """
     return workspace / 'works' / run_id / role
+
+
+def task_path_rel(run_id: str, role: str) -> str:
+    """
+    任务路径相对段：works/{run_id}/{role}
+    用于 work_dir_rel、Docker WORK_DIR 等路径拼接。
+    """
+    return f"works/{run_id}/{role}"
+
+
+def task_slug(
+    run_id: str,
+    role: str,
+    truncate_run_id: int | None = None,
+    max_role_len: int = 50,
+) -> str:
+    """
+    任务命名 slug：{run_id}-{role}，用于容器名、分支名、文件名等。
+    
+    Args:
+        run_id: 运行 ID
+        role: 角色
+        truncate_run_id: 若指定，取 run_id 末 N 位（如 8 用于容器名）
+        max_role_len: role 最大长度，容器名等场景可用 20
+    
+    Returns:
+        安全命名串，如 "17725117268607616-setup" 或 "768607616-setup"
+    """
+    r = run_id[-truncate_run_id:] if truncate_run_id and len(run_id) > truncate_run_id else run_id
+    safe_role = role.replace("/", "-").replace("\\", "-")[:max_role_len]
+    return f"{r}-{safe_role}"
 
 
 def check_work_dir_conflict(workspace: Path, run_id: str, role: str) -> None:
@@ -309,7 +344,7 @@ def build_task_payload(
     - Old: ["backend-dev", "frontend-dev"]
     - New: [{"id": "backend-dev", "description": "后端开发", "match_rules": {...}}, ...]
     """
-    task_block = task.get("worker") or task.get("task") or task
+    task_block = get_task_block(task)
     base_instructions = list(task_block.get("instructions") or [])
     if round_context:
         base_instructions = base_instructions + [round_context]

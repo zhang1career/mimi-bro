@@ -28,7 +28,7 @@ _console_callback: Callable[[str], None] | None = None
 
 
 def set_console_callback(cb: Callable[[str], None] | None) -> None:
-    """Set optional callback for broker-level messages (e.g. skill API result)."""
+    """Deprecated: 请改用 load_skill_registry(..., on_message=...) 显式传入回调，避免全局状态。"""
     global _console_callback
     _console_callback = cb
 
@@ -271,11 +271,14 @@ class SkillNotFoundError(RuntimeError):
 
 def load_skill_registry(
         skill_refs: list[str] | None = None,
+        on_message: Callable[[str], None] | None = None,
 ) -> _SkillRegistry:
     """从知识库 API 加载技能，初始化内部缓存。
     skill_refs: 要加载的技能 ID 列表，按 summary 查询（如 [backend-dev]）；缺省时用 mimi-bro 拉全量（兼容旧行为）。
+    on_message: 加载过程中的消息回调（如 API 结果摘要）；优先于 set_console_callback。显式传入可避免全局状态。
     path 参数已废弃，保留仅为兼容。"""
     global _registry
+    log = on_message or _console_callback or (lambda m: None)
     if skill_refs:
         summaries_to_fetch = list(skill_refs)
     else:
@@ -286,16 +289,16 @@ def load_skill_registry(
         try:
             items = _fetch_some_like(summary)
         except Exception as e:
-            _console(f"Skill API error (summary={summary!r}): {e}")
+            log(f"Skill API error (summary={summary!r}): {e}")
             raise
         if not items:
-            _console(f"Skill API returned no results (summary={summary!r}).")
+            log(f"Skill API returned no results (summary={summary!r}).")
             if skill_refs:
                 raise RuntimeError(
                     f"知识库 API 返回空结果（summary={summary!r}）。请确认 KNOW_API_URL 正确且知识库中已有对应技能。"
                 )
             continue
-        _console(f"Skill API: {len(items)} entries for {summary!r}.")
+        log(f"Skill API: {len(items)} entries for {summary!r}.")
         for k in items:
             title = k.get("title")
             if not title or not isinstance(title, str):

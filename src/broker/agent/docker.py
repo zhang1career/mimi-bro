@@ -6,6 +6,7 @@ import threading
 
 import docker
 
+from broker.container.manager import get_host_mount_from_docker
 from broker.utils.path_util import PROJECT_ROOT
 from pathlib import Path
 
@@ -50,6 +51,10 @@ def _load_dotenv_from_project_root() -> None:
     """Load .env from project root so CURSOR_API_KEY etc. are available when not set in shell."""
     from broker.utils.env_util import load_dotenv_from_dir
     load_dotenv_from_dir(PROJECT_ROOT)
+    # When inside bro-subtask: PROJECT_ROOT=/workspace; load docker/.env from /source (worktree has repo)
+    docker_env = Path("/source/docker/.env") if Path("/source").exists() else PROJECT_ROOT / "docker" / ".env"
+    if docker_env.exists():
+        load_dotenv_from_dir(docker_env.parent)
 
 
 def run_container(
@@ -70,9 +75,6 @@ def run_container(
     src = src.resolve() if hasattr(src, "resolve") else Path(src).resolve()
 
     print(f"[docker] starting agent {agent_id} ({role})", flush=True)
-    print(f"[docker] workspace (work): {workspace} -> /workspace", flush=True)
-    if src != workspace:
-        print(f"[docker] source: {src} -> /source", flush=True)
 
     container_name = f"agent-{agent_id}"
 
@@ -105,20 +107,47 @@ def run_container(
             print(f"[docker] warning: CURSOR_API_KEY not set in host environment", flush=True)
             print(f"[docker] hint: Set CURSOR_API_KEY environment variable to authenticate cursor-agent", flush=True)
 
-        volumes = {str(workspace): {"bind": "/workspace", "mode": "rw"}}
+        # Resolve host paths when running inside a container (workspace=/workspace)
+        ws_str, src_str = str(workspace), str(src)
+        mount_workspace = None
+        mount_source = None
+        if ws_str == "/workspace" or ws_str.startswith("/workspace/"):
+            mount_workspace = get_host_mount_from_docker("/workspace")
+        if src_str == "/source" or src_str.startswith("/source/"):
+            mount_source = get_host_mount_from_docker("/source")
+        if not mount_source and src == workspace and mount_workspace:
+            mount_source = mount_workspace
+        mount_workspace = mount_workspace or ws_str
+        mount_source = mount_source or src_str
+
+        if mount_workspace == "/workspace":
+            raise RuntimeError(
+                "Cannot mount /workspace: broker is running inside a container but host path is unknown. "
+                "Ensure Docker socket is available and /workspace is a bind mount so docker inspect can resolve it."
+            )
+        print(f"[docker] workspace (host): {mount_workspace} -> /workspace", flush=True)
         if src != workspace:
-            volumes[str(src)] = {"bind": "/source", "mode": "ro"}
+            print(f"[docker] source (host): {mount_source} -> /source", flush=True)
+
+        volumes = {mount_workspace: {"bind": "/workspace", "mode": "rw"}}
+        if src != workspace:
+            # Agent must create/modify files in source (e.g. worktree); use rw
+            volumes[mount_source] = {"bind": "/source", "mode": "rw"}
+
+        # shm_size: /dev/shm default 64MB can cause issues with cursor-cli/Node. Use 1g.
+        run_kw = {
+            "image": "cursor-agent:latest",
+            "name": container_name,
+            "environment": env_vars,
+            "volumes": volumes,
+            "command": ["python", "/src/agent.py"],
+            "detach": True,
+            "shm_size": "1g",
+            "healthcheck": {"test": ["NONE"]},  # disable inherited healthcheck
+        }
 
         print("[docker] starting container (image cursor-agent:latest, may pull if missing)...", flush=True)
-        # Run agent entrypoint; image default CMD is sleep infinity for debug
-        container = _get_docker_client().containers.run(
-            image="cursor-agent:latest",
-            name=container_name,
-            environment=env_vars,
-            volumes=volumes,
-            command=["python", "/src/agent.py"],
-            detach=True,
-        )
+        container = _get_docker_client().containers.run(**run_kw)
         print("[docker] container started, attaching log stream...", flush=True)
 
         # Stream container stdout/stderr: only print type=="result" -> "result" field; full log in agent.log inside container
@@ -137,23 +166,31 @@ def run_container(
         stream_thread.join(timeout=2.0)
 
         # On failure, print tail of logs again for debugging
+        logs = None
         if exit_code != 0:
-            logs = container.logs(stdout=True, stderr=True, tail=500)
-            if logs:
-                print("[docker] container logs (tail):")
-                print(logs.decode("utf-8", errors="replace"))
-        
-        # Remove container
-        container.remove()
-        
+            try:
+                logs = container.logs(stdout=True, stderr=True, tail=500)
+                if logs:
+                    print("[docker] container logs (tail):")
+                    print(logs.decode("utf-8", errors="replace"))
+            except Exception as e:
+                if "409" not in str(e) and "dead or marked for removal" not in str(e).lower():
+                    print(f"[docker] could not get logs: {e}")
+
+        # Do not remove container here. Cleanup is deferred to atexit (cleanup_subtask_containers)
+        # when BROKER_AUTO_CLEANUP_CONTAINER=1, so TUI can still read logs while running.
+
         if exit_code != 0:
             # Use actual entrypoint as command so error message is clear (not 'None')
             cmd_str = "python /src/agent.py"
             stderr_text = logs.decode('utf-8', errors='replace') if logs else ''
-            # Hint for 128+signal exit codes (e.g. 148 = 128+20 = SIGTSTP)
+            # Hint for 128+signal exit codes (e.g. 137 = 128+9 = SIGKILL, often OOM)
             if 128 <= exit_code <= 159:
                 sig = exit_code - 128
-                stderr_text = stderr_text + f"\n[docker] hint: exit code {exit_code} = 128+{sig} (process may have received signal {sig}, e.g. killed/stopped)."
+                hint = f"\n[docker] hint: exit code {exit_code} = 128+{sig} (process may have received signal {sig}, e.g. killed/stopped)."
+                if exit_code == 137:
+                    hint += " Exit 137 = SIGKILL. Common causes: OOM (check docker inspect ID --format '{{.State.OOMKilled}}'); /dev/shm too small (we set shm_size=1g); Docker healthcheck; host VM limits."
+                stderr_text = stderr_text + hint
             raise docker.errors.ContainerError(
                 container=container_name,
                 exit_status=exit_code,
@@ -171,15 +208,23 @@ def run_container(
         raise
     except Exception as e:
         print(f"[docker] unexpected error: {e}")
-        # Try to get logs from container if it still exists
+        # Try to get logs if container still exists (skip if 404/NotFound)
         try:
             container = _get_docker_client().containers.get(container_name)
-            logs = container.logs(stdout=True, stderr=True, tail=100)
-            if logs:
-                print("[docker] container logs:")
-                print(logs.decode('utf-8', errors='replace'))
-            container.remove()
-        except:
+            if container.status not in ("dead", "removal", "removing"):
+                logs = container.logs(stdout=True, stderr=True, tail=100)
+                if logs:
+                    print("[docker] container logs:")
+                    print(logs.decode("utf-8", errors="replace"))
+            try:
+                container.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+            except Exception:
+                pass
+        except docker.errors.NotFound:
+            pass
+        except Exception:
             pass
         raise
 

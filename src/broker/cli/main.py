@@ -1,6 +1,7 @@
 """Main CLI commands: submit, status, stop, run, parallel."""
 from __future__ import annotations
 
+import atexit
 import os
 import sys
 import traceback
@@ -8,7 +9,10 @@ from pathlib import Path
 
 import typer
 
+from broker.utils.traceback_util import format_exc as traceback_format_exc
+
 from broker.agent.runner import run_agents, run_agents_local, worker_id_from_task
+from broker.model.task import get_task_id
 from broker.decision.propose import propose
 from broker.decision.record import record as record_decision
 from broker.planner import plan_task
@@ -57,6 +61,12 @@ def submit(
             False,
             "--local",
             help="Run locally without Docker container",
+        ),
+        docker_workspace: str = typer.Option(
+            "/workspace",
+            "--docker-workspace",
+            "-dw",
+            help="Workspace path inside Docker container (used when sub-tasks run in containers); default: /workspace",
         ),
         auto: bool = typer.Option(
             False,
@@ -121,7 +131,7 @@ def submit(
         pass
     try:
         _submit_impl(
-            task_file, ws, source_path, fresh, local, auto, parallel,
+            task_file, ws, source_path, fresh, local, docker_workspace, auto, parallel,
             max_workers, args, verbose, output_format, theme, run_id, parent_run_id,
         )
     except BaseException as e:
@@ -132,7 +142,7 @@ def submit(
         else:
             err_file = ws / "error.log"
         try:
-            err_file.write_text(traceback.format_exc(), encoding="utf-8")
+            err_file.write_text(traceback_format_exc(), encoding="utf-8")
             typer.echo(f"Error: {e}\n(traceback → {err_file})", err=True)
         except OSError:
             typer.echo(f"Error: {e}", err=True)
@@ -145,6 +155,7 @@ def _submit_impl(
         source_path: Path | None,
         fresh: int,
         local: bool,
+        docker_workspace: str,
         auto: bool,
         parallel: bool,
         max_workers: int,
@@ -175,7 +186,7 @@ def _submit_impl(
     if "params" in task:
         del task["params"]
 
-    task_id = (task.get("worker") or task.get("task") or task).get("id") or task.get("id") or "demo"
+    task_id = get_task_id(task)
     if fresh == 0:
         clear_progress(task_id)
     elif fresh > 0:
@@ -241,15 +252,21 @@ def _submit_impl(
     agents = selected["agents"]
     batches = selected.get("batches")
 
+    from broker.agent.runner import cleanup_subtask_containers
+    from broker.utils.traceback_util import install_excepthook
+
+    install_excepthook()
+    atexit.register(cleanup_subtask_containers)
+
     if output_format == "jsonl":
         driver = JsonlDriver(verbose=verbose)
         _run_agents_with_driver(
-            agents, auto, batches, driver, fresh, local, parallel, max_workers, res, task, verbose, workspace, run_id, parent_run_id
+            agents, auto, batches, driver, fresh, local, docker_workspace, parallel, max_workers, res, task, verbose, workspace, run_id, parent_run_id
         )
     elif output_format == "plain" or not sys.stdout.isatty():
         driver = PlainDriver(verbose=verbose)
         _run_agents_with_driver(
-            agents, auto, batches, driver, fresh, local, parallel, max_workers, res, task, verbose, workspace, run_id, parent_run_id
+            agents, auto, batches, driver, fresh, local, docker_workspace, parallel, max_workers, res, task, verbose, workspace, run_id, parent_run_id
         )
     else:
         from broker.ui.config import get_theme_name
@@ -270,13 +287,14 @@ def _submit_impl(
                     batches=batches, auto=auto, verbose=verbose, fresh_level=fresh,
                     parallel=parallel, max_workers=max_workers,
                     display_driver=driver, run_id=run_id, parent_run_id=parent_run_id,
+                    docker_workspace=docker_workspace,
                 )
 
         driver.run_with(run_broker)
 
 
 def _run_agents_with_driver(
-        agents, auto, batches, driver, fresh, local, parallel, max_workers, res, task, verbose, ws, run_id=None, parent_run_id=None
+        agents, auto, batches, driver, fresh, local, docker_workspace, parallel, max_workers, res, task, verbose, ws, run_id=None, parent_run_id=None
 ):
     if local:
         if verbose:
@@ -293,6 +311,7 @@ def _run_agents_with_driver(
             batches=batches, auto=auto, verbose=verbose, fresh_level=fresh,
             parallel=parallel, max_workers=max_workers,
             display_driver=driver, run_id=run_id, parent_run_id=parent_run_id,
+            docker_workspace=docker_workspace,
         )
 
 

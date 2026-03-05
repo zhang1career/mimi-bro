@@ -170,11 +170,7 @@ class ResultMerger:
             return True, []
 
         if "CONFLICT" in result.stdout or "conflict" in result.stderr.lower():
-            status_result = self._run_git(["status", "--porcelain"], check=False)
-            conflict_files = []
-            for line in status_result.stdout.splitlines():
-                if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD "):
-                    conflict_files.append(line[3:].strip())
+            conflict_files = self._get_conflict_files()
             return False, conflict_files
 
         return False, []
@@ -184,17 +180,19 @@ class ResultMerger:
         self._run_git(["cherry-pick", "--abort"], check=False)
 
     def _continue_cherry_pick(self) -> bool:
-        """继续 cherry-pick（冲突解决后）"""
-        result = self._run_git(["cherry-pick", "--continue"], check=False)
+        """继续 cherry-pick（冲突解决后），使用 --no-edit 避免在非交互环境调用 vi。"""
+        result = self._run_git(["cherry-pick", "--continue", "--no-edit"], check=False)
         return result.returncode == 0
 
     def _get_conflict_files(self) -> list[str]:
-        """获取当前冲突文件列表"""
+        """获取当前冲突（unmerged）文件列表。覆盖 porcelain 所有 unmerged 状态码：UU,AA,DD,AU,UA,UD,DU。"""
         status_result = self._run_git(["status", "--porcelain"], check=False)
         conflict_files = []
         for line in status_result.stdout.splitlines():
-            if line.startswith("UU ") or line.startswith("AA ") or line.startswith("DD "):
-                conflict_files.append(line[3:].strip())
+            if len(line) >= 3 and line[2] == " ":
+                # 第一列或第二列为 A/D/U 表示 unmerged
+                if line[0] in "ADU" or line[1] in "ADU":
+                    conflict_files.append(line[3:].strip())
         return conflict_files
 
     def set_run_external_fn(
@@ -212,13 +210,15 @@ class ResultMerger:
         """
         启动 git mergetool GUI。
 
-        不捕获输出，让交互式工具（如 vimdiff）正常显示。
-        在非 TTY 环境下不执行，直接返回 False。
+        不捕获输出，让交互式工具（如 vimdiff、Beyond Compare）正常显示。
+        在非 TTY 且无 _run_external_fn 时不执行。
+        当 _run_external_fn 已设置（如 TUI），由 driver 挂起界面后在真实终端运行，可弹出 Beyond Compare 等 GUI。
 
         Returns:
             True 如果 mergetool 成功退出，False 否则
         """
-        if not is_interactive_tty():
+        # TUI 模式下 _run_external_fn 会挂起界面并赋予真实终端，无需 isatty
+        if not is_interactive_tty() and self._run_external_fn is None:
             return False
 
         args = ["git", "mergetool"]
@@ -236,10 +236,16 @@ class ResultMerger:
     def _stage_resolved_files(self) -> bool:
         """
         暂存所有已解决的冲突文件。
+        先对已知冲突文件执行 git add，再 git add -u 兜底。
 
         Returns:
             True 如果成功，False 否则
         """
+        conflict_files = self._get_conflict_files()
+        if conflict_files:
+            result = self._run_git(["add", "--"] + conflict_files, check=False)
+            if result.returncode != 0:
+                return False
         result = self._run_git(["add", "-u"], check=False)
         return result.returncode == 0
 
@@ -353,7 +359,9 @@ class ResultMerger:
 
             if result.status == MergeStatus.CONFLICT:
                 if interactive:
-                    if is_interactive_tty():
+                    # TUI 模式下 _run_external_fn 已设置，driver 会挂起界面后运行 mergetool
+                    can_interactive = is_interactive_tty() or self._run_external_fn is not None
+                    if can_interactive:
                         msg(f"Conflict in {subtask_id}:")
                         resolved = self._resolve_conflicts_interactive(result, message_callback)
                         if resolved:
@@ -372,7 +380,7 @@ class ResultMerger:
                             self._abort_cherry_pick()
                             break
                     else:
-                        msg(f"⚠ Conflict in {subtask_id} (non-TTY, conflict markers preserved):")
+                        msg(f"⚠ Conflict in {subtask_id} (no interactive terminal, conflict markers preserved):")
                         for f in result.conflict_files:
                             msg(f"  - {f}")
                         msg("Run 'git mergetool' manually to resolve, then 'git cherry-pick --continue'")

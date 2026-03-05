@@ -19,6 +19,8 @@ from textual.containers import Container, Horizontal, ScrollableContainer, Verti
 from textual.widgets import Log, ProgressBar, Static, Tree
 from textual.widgets.tree import TreeNode
 
+from broker.container.manager import list_visible_containers
+
 from .themes import DEFAULT_THEME, Theme, get_theme
 
 
@@ -634,6 +636,9 @@ class SubmitTUI(App):
         Binding("end", "scroll_end", "Bottom", show=False),
         Binding("0", "line_start", "Start", show=False),
         Binding("$", "line_end", "End", show=False),
+        Binding("s", "stop_container", "Stop", show=False),
+        Binding("r", "restart_container", "Restart", show=False),
+        Binding("x", "remove_container", "Remove", show=False),
     ]
 
     def __init__(
@@ -665,6 +670,7 @@ class SubmitTUI(App):
         self._selected_node_id: str | None = None
         self._parent_tasks_progress: list[dict] = []
         self._progress_carousel_index: int = 0
+        self._completed_per_worker: dict[str, set[str]] = {}  # worker_id -> set of completed role
         self._progress_carousel_timer: float = 0.0
         self._processed_result_hashes: set[int] = set()
         self._notification_queue: list[str] = []
@@ -673,22 +679,28 @@ class SubmitTUI(App):
         self._skill_confirm_dialog: SkillConfirmDialog | None = None
         self._shutting_down: bool = False
         self._interval_handles: list = []
+        self._containers: dict[str, dict] = {}
+        self._container_node_by_name: dict[str, TreeNode] = {}
+        self._selected_container_name: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            with Horizontal(id="top-row"):
-                with Container(id="tree-panel"):
-                    yield Tree("Tasks", id="task-tree")
+            with Horizontal(id="main-row"):
+                with Vertical(id="left-column"):
+                    with Container(id="tree-panel"):
+                        yield Tree("Tasks", id="task-tree")
+                    with Container(id="container-panel"):
+                        yield Tree("Containers", id="container-tree")
                 with Container(id="log-panel"):
                     with NonFocusableScrollContainer(id="log-scroll"):
                         yield LogViewer("", id="log-viewer", markup=False)
             with Container(id="console-panel"):
                 yield Log(id="console-log")
-            with Container(id="progress-panel"):
+            with Container(id="status-row"):
                 yield Static("", id="status-line", markup=False)
-                with Horizontal(id="progress-bar-row"):
-                    yield Static("Progress: ", id="progress-label", markup=False)
-                    yield ProgressBar(total=1, id="progress-bar", show_eta=False)
+            with Horizontal(id="progress-row"):
+                yield Static("", id="progress-label", markup=False)
+                yield ProgressBar(total=1, id="progress-bar", show_eta=False, show_percentage=False)
             with Horizontal(id="footer"):
                 yield Static("", id="footer-help", markup=True)
                 yield Static("", id="footer-notify", markup=True)
@@ -700,11 +712,26 @@ class SubmitTUI(App):
 
         self._interval_handles.append(self.set_interval(0.3, self._drain_queue))
         self._interval_handles.append(self.set_interval(0.5, self._refresh_log_viewer))
+        self._interval_handles.append(self.set_interval(2.0, self._refresh_containers_from_docker))
         self._interval_handles.append(self.set_interval(5.0, self._carousel_progress))
 
         tree = self.query_one("#task-tree", Tree)
         tree.root.expand()
         tree.focus()
+
+        container_tree = self.query_one("#container-tree", Tree)
+        container_tree.root.expand()
+
+        self._refresh_containers_from_docker()
+
+    def on_descendant_focus(self, event) -> None:
+        """Update footer hints when focus changes."""
+        try:
+            container_tree = self.query_one("#container-tree", Tree)
+            is_container_focused = event.widget == container_tree
+            self._update_footer_hints(container_focused=is_container_focused)
+        except Exception:
+            pass
 
     def _apply_theme(self) -> None:
         """Apply theme colors via CSS variables."""
@@ -739,29 +766,46 @@ class SubmitTUI(App):
             log_panel = self.query_one("#log-panel", Container)
             log_panel.border_title = " Log "
 
+            container_panel = self.query_one("#container-panel", Container)
+            container_panel.border_title = " Containers "
+
             console_panel = self.query_one("#console-panel", Container)
             console_panel.border_title = " Console "
 
-            progress_panel = self.query_one("#progress-panel", Container)
-            progress_panel.border_title = " Progress "
         except Exception:
             pass
 
     def _setup_footer(self) -> None:
         """Set up the keyboard shortcuts footer (htop style)."""
+        self._update_footer_hints()
+
+    def _update_footer_hints(self, container_focused: bool = False) -> None:
+        """Update footer hints based on current focus."""
         theme = self._theme
-        hints = [
-            ("↑/k", "Up"),
-            ("↓/j", "Down"),
-            ("←/h", "Left"),
-            ("→/l", "Right"),
-            ("g/G", "Top/Bottom"),
-            ("0/$", "Start/End"),
-            ("Tab", "Switch"),
-            ("Enter", "Select"),
-            ("y", "Copy"),
-            ("q", "Quit"),
-        ]
+        
+        if container_focused:
+            hints = [
+                ("↑/k", "Up"),
+                ("↓/j", "Down"),
+                ("s", "Stop"),
+                ("r", "Restart"),
+                ("x", "Remove"),
+                ("Tab", "Switch"),
+                ("q", "Quit"),
+            ]
+        else:
+            hints = [
+                ("↑/k", "Up"),
+                ("↓/j", "Down"),
+                ("←/h", "Left"),
+                ("→/l", "Right"),
+                ("g/G", "Top/Bottom"),
+                ("Tab", "Switch"),
+                ("Enter", "Select"),
+                ("y", "Copy"),
+                ("q", "Quit"),
+            ]
+        
         parts = []
         for key, desc in hints:
             parts.append(f"[bold on {theme.selection}]{key}[/]{desc}")
@@ -893,6 +937,82 @@ class SubmitTUI(App):
 
         self.exit()
 
+    def _get_selected_container_name(self) -> str | None:
+        """Get the currently selected container name from container tree."""
+        try:
+            container_tree = self.query_one("#container-tree", Tree)
+            node = container_tree.cursor_node
+            if node is None or node.data is None:
+                return None
+            if isinstance(node.data, dict):
+                return node.data.get("container_name")
+            return None
+        except Exception:
+            return None
+
+    def action_stop_container(self) -> None:
+        """Stop the selected container."""
+        container_name = self._get_selected_container_name()
+        if not container_name:
+            self._notify("No container selected")
+            return
+
+        try:
+            from broker.container.manager import ContainerManager
+            manager = ContainerManager(workspace=Path("/tmp"))
+            if manager.stop_container(container_name):
+                self._notify(f"Stopped: {container_name}")
+                self._append_console(f"[container] Stopped: {container_name}")
+            else:
+                self._notify(f"Failed to stop: {container_name}")
+        except Exception as e:
+            self._notify(f"Error: {e}")
+
+    def action_restart_container(self) -> None:
+        """Restart the selected container."""
+        container_name = self._get_selected_container_name()
+        if not container_name:
+            self._notify("No container selected")
+            return
+
+        try:
+            from broker.container.manager import ContainerManager
+            manager = ContainerManager(workspace=Path("/tmp"))
+            if manager.restart_container(container_name):
+                self._notify(f"Restarted: {container_name}")
+                self._append_console(f"[container] Restarted: {container_name}")
+            else:
+                self._notify(f"Failed to restart: {container_name}")
+        except Exception as e:
+            self._notify(f"Error: {e}")
+
+    def action_remove_container(self) -> None:
+        """Remove the selected container."""
+        container_name = self._get_selected_container_name()
+        if not container_name:
+            self._notify("No container selected")
+            return
+
+        try:
+            from broker.container.manager import ContainerManager
+            manager = ContainerManager(workspace=Path("/tmp"))
+            if manager.remove_container(container_name, force=True):
+                self._notify(f"Removed: {container_name}")
+                self._append_console(f"[container] Removed: {container_name}")
+                if container_name in self._containers:
+                    del self._containers[container_name]
+                if container_name in self._container_node_by_name:
+                    try:
+                        node = self._container_node_by_name[container_name]
+                        node.remove()
+                    except Exception:
+                        pass
+                    del self._container_node_by_name[container_name]
+            else:
+                self._notify(f"Failed to remove: {container_name}")
+        except Exception as e:
+            self._notify(f"Error: {e}")
+
     def _carousel_progress(self) -> None:
         """Rotate progress bar display among parent tasks every 5 seconds."""
         if self._shutting_down:
@@ -959,6 +1079,8 @@ class SubmitTUI(App):
         elif t == "result":
             wid = evt.get("worker_id") or evt.get("task_id") or "?"
             role = evt.get("role", "?")
+            if wid and role and role != "?":
+                self._completed_per_worker.setdefault(wid, set()).add(role)
             status = evt.get("status", "?")
             code = evt.get("exit_code")
             line = f"Result: {wid} ({role}): {status}"
@@ -983,6 +1105,8 @@ class SubmitTUI(App):
             self._append_console("Skill selection timeout, auto-confirmed")
         elif t == "run_external_request":
             self._handle_run_external(evt)
+        elif t == "container_status":
+            self._handle_container_status(evt)
         elif t == "done":
             self._broker_done = True
 
@@ -1069,6 +1193,133 @@ class SubmitTUI(App):
             self._apply_tree_colors()
             self._refresh_log_viewer()
 
+    def _handle_container_status(self, evt: dict) -> None:
+        """Handle container status update event."""
+        container_name = evt.get("container_name", "")
+        run_id = evt.get("run_id", "")
+        role = evt.get("role", "")
+        status = evt.get("status", "")
+        exit_code = evt.get("exit_code")
+        error_message = evt.get("error_message", "")
+
+        if not container_name:
+            return
+
+        self._containers[container_name] = {
+            "container_name": container_name,
+            "run_id": run_id,
+            "role": role,
+            "status": status,
+            "exit_code": exit_code,
+            "error_message": error_message,
+            "work_dir": evt.get("work_dir", ""),
+        }
+
+        self._update_container_tree()
+
+    def _refresh_containers_from_docker(self) -> None:
+        """Poll Docker for agent-* and bro-subtask-* containers and update the tree."""
+        try:
+            items = list_visible_containers(all_containers=True)
+        except Exception:
+            return
+
+        status_map = {
+            "running": "running",
+            "exited": "stopped",
+            "created": "creating",
+            "paused": "stopped",
+        }
+
+        names_from_docker = {item.get("name") for item in items if item.get("name")}
+        changed = False
+        for name in list(self._containers):
+            if name not in names_from_docker:
+                del self._containers[name]
+                if name in self._container_node_by_name:
+                    try:
+                        node = self._container_node_by_name[name]
+                        node.remove()
+                    except Exception:
+                        pass
+                    del self._container_node_by_name[name]
+                changed = True
+        for item in items:
+            name = item.get("name", "")
+            if not name:
+                continue
+
+            raw_status = (item.get("status") or "").lower()
+            status = status_map.get(raw_status, raw_status or "?")
+            if status == "stopped" and item.get("exit_code") not in (None, 0):
+                status = "failed"
+
+            prev = self._containers.get(name, {})
+            if (
+                prev.get("status") != status
+                or prev.get("exit_code") != item.get("exit_code")
+            ):
+                changed = True
+
+            self._containers[name] = {
+                "container_name": name,
+                "run_id": prev.get("run_id", ""),
+                "role": prev.get("role", name.replace("bro-subtask-", "").replace("agent-", "")),
+                "status": status,
+                "exit_code": item.get("exit_code"),
+                "error_message": prev.get("error_message", ""),
+                "work_dir": prev.get("work_dir", ""),
+            }
+
+        if changed:
+            self._update_container_tree()
+
+    def _update_container_tree(self) -> None:
+        """Update the container tree with current container states."""
+        try:
+            container_tree = self.query_one("#container-tree", Tree)
+        except Exception:
+            return
+
+        theme = self._theme
+
+        for name, data in self._containers.items():
+            status = data.get("status", "")
+            role = data.get("role", "")
+            exit_code = data.get("exit_code")
+
+            if status == "running":
+                icon = "▶"
+                color = theme.running
+            elif status == "stopped":
+                icon = "■"
+                color = theme.dimmed
+            elif status == "failed":
+                icon = "✗"
+                color = theme.error
+            elif status == "creating":
+                icon = "◌"
+                color = theme.waiting
+            elif status == "removed":
+                icon = "○"
+                color = theme.dimmed
+            else:
+                icon = "?"
+                color = theme.dimmed
+
+            short_name = name.replace("bro-subtask-", "").replace("agent-", "")
+            label = f"[{color}]{icon}[/] {short_name}"
+            if exit_code is not None and status != "running":
+                label += f" (exit {exit_code})"
+
+            if name in self._container_node_by_name:
+                node = self._container_node_by_name[name]
+                if getattr(node, "label", None) != label:
+                    node.label = label
+            else:
+                node = container_tree.root.add_leaf(label, data=data)
+                self._container_node_by_name[name] = node
+
     def _apply_tree_colors(self) -> None:
         """Color running task labels using Rich markup."""
         for nid in list(self._node_by_id):
@@ -1087,23 +1338,24 @@ class SubmitTUI(App):
                 tree_node.label = new_label
 
     def _update_parent_tasks_progress(self) -> None:
-        """Update parent tasks progress list from _log_paths_by_worker."""
+        """Update parent tasks progress list from _log_paths_by_worker. One entry per (worker, role) for carousel."""
         parent_tasks = []
         for worker_id, roles_paths in self._log_paths_by_worker.items():
-            if len(roles_paths) >= 2:
-                for role, path in roles_paths:
-                    # node_id = directory name = real task ID (e.g. "test-parallel-deps-17722110687154797-first")
-                    node_id = Path(path).parent.name if path else f"{worker_id}-{role}"
-                    color_idx = self._get_node_color(node_id)
-                    parent_tasks.append(
-                        {
-                            "worker_id": worker_id,
-                            "role": role,
-                            "node_id": node_id,
-                            "color_idx": color_idx,
-                            "label": node_id,
-                        }
-                    )
+            if not roles_paths:
+                continue
+            total = len(roles_paths)
+            for role, path in roles_paths:
+                node_id = Path(path).parent.name if path else f"{worker_id}-{role}"
+                color_idx = self._get_node_color(node_id)
+                parent_tasks.append(
+                    {
+                        "worker_id": worker_id,
+                        "label": node_id,
+                        "node_id": node_id,
+                        "color_idx": color_idx,
+                        "total": total,
+                    }
+                )
         if parent_tasks:
             self._parent_tasks_progress = parent_tasks
             if self._progress_carousel_index >= len(parent_tasks):
@@ -1231,18 +1483,26 @@ class SubmitTUI(App):
         for i in range(6):
             bar.remove_class(f"task-color-{i}")
 
-        if len(self._parent_tasks_progress) >= 2:
+        if len(self._parent_tasks_progress) >= 1:
             idx = self._progress_carousel_index % len(self._parent_tasks_progress)
             current_task = self._parent_tasks_progress[idx]
-            task_label = current_task.get("label", current_task.get("role", "?"))
+            task_label = current_task.get("label", "?")
             color_idx = current_task.get("color_idx", 0)
-            carousel_indicator = f"[{idx + 1}/{len(self._parent_tasks_progress)}]"
-            if pt > 0:
-                bar.update(total=pt, progress=pc)
-                label.update(f"{task_label} {carousel_indicator}: {pc}/{pt}")
+            worker_id = current_task.get("worker_id", "")
+            task_total = current_task.get("total", 1)
+            task_completed = len(self._completed_per_worker.get(worker_id, set()))
+            # Fallback: broker often doesn't emit result events (e.g. serial docker) - use progress events instead
+            if task_completed == 0 and pt > 0:
+                task_completed, task_total = pc, pt
+            carousel_indicator = (
+                f" [{idx + 1}/{len(self._parent_tasks_progress)}]" if len(self._parent_tasks_progress) > 1 else ""
+            )
+            if task_total > 0:
+                bar.update(total=task_total, progress=task_completed)
+                label.update(f"{task_label}{carousel_indicator}: {task_completed}/{task_total}")
             else:
                 bar.update(total=1, progress=0)
-                label.update(f"{task_label} {carousel_indicator}:")
+                label.update(f"{task_label}{carousel_indicator}:")
             bar.add_class(f"task-color-{color_idx % 6}")
         else:
             if pt > 0:
@@ -1391,6 +1651,16 @@ class SubmitTUI(App):
         if node is None:
             self._selected_node_id = None
             return
+
+        # Check if this is from the container tree
+        try:
+            container_tree = self.query_one("#container-tree", Tree)
+            if event.tree == container_tree:
+                self._handle_container_node_selected(node)
+                return
+        except Exception:
+            pass
+
         label = getattr(node, "label", "") or ""
         self._selected_node_label = _plain_label(label)
         self._update_log_title(self._selected_node_label)
@@ -1414,6 +1684,45 @@ class SubmitTUI(App):
             self._log_viewer_content = "(no log)"
             viewer = self.query_one("#log-viewer", LogViewer)
             viewer.update("(no log)")
+
+    def _handle_container_node_selected(self, node: TreeNode) -> None:
+        """Handle container tree node selection - show container logs."""
+        data = getattr(node, "data", None)
+        if not isinstance(data, dict):
+            return
+
+        container_name = data.get("container_name", "")
+        if not container_name:
+            return
+
+        self._selected_container_name = container_name
+        label = _plain_label(getattr(node, "label", "") or container_name)
+        self._update_log_title(f"Container: {label}")
+
+        # Get container logs: try Docker API first, fallback to work_dir/container.log
+        logs = ""
+        work_dir = (self._containers.get(container_name) or {}).get("work_dir", "")
+        try:
+            from broker.container.manager import ContainerManager
+            manager = ContainerManager(workspace=Path("/tmp"))
+            logs = manager.get_container_logs(container_name, tail=500)
+        except Exception:
+            pass
+        if not logs and work_dir:
+            try:
+                fallback_path = Path(work_dir) / "container.log"
+                if fallback_path.exists():
+                    logs = fallback_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+        if logs:
+            self._log_viewer_content = logs
+            viewer = self.query_one("#log-viewer", LogViewer)
+            viewer.update(logs)
+        else:
+            self._log_viewer_content = "(no container logs)"
+            viewer = self.query_one("#log-viewer", LogViewer)
+            viewer.update("(no container logs)")
 
     def _collapse_other_nodes(self, selected_node: TreeNode) -> None:
         """Collapse all nodes except the selected one and its ancestors (accordion behavior)."""
@@ -1446,18 +1755,17 @@ class SubmitTUI(App):
         """Run broker fn in thread. Call this before app.run()."""
 
         def worker():
-            import traceback
-
             from broker.context import current_work_dir
+            from broker.utils.traceback_util import error_summary_for_console, format_exc as traceback_format_exc
 
             try:
                 fn()
             except BaseException as e:
                 work_dir = current_work_dir.get()
-                msg = str(e)
+                msg = error_summary_for_console(e)
                 if work_dir is not None:
                     try:
-                        tb = traceback.format_exc()
+                        tb = traceback_format_exc()
                         err_file = work_dir / "error.log"
                         err_file.write_text(tb, encoding="utf-8")
                         msg = f"{msg} (traceback -> {err_file})"

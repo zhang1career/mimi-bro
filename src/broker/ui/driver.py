@@ -14,6 +14,7 @@ from broker.ui import events
 
 if TYPE_CHECKING:
     from broker.parallel.analyzer import DependencyGraph
+    from broker.container.manager import SubtaskContainer
 
 
 class DisplayDriver:
@@ -75,6 +76,10 @@ class DisplayDriver:
 
     def on_console_message(self, message: str) -> None:
         """Broker-level message (e.g. skill API result, which skill was chosen)."""
+        pass
+
+    def on_container_status(self, container: "SubtaskContainer") -> None:
+        """Container status update for Docker execution."""
         pass
 
     def confirm_dependencies(
@@ -206,6 +211,19 @@ class JsonlDriver(DisplayDriver):
         evt = events.emit_console(message)
         print(events.to_jsonl(evt), end="", flush=True)
 
+    def on_container_status(self, container: "SubtaskContainer") -> None:
+        work_dir_str = str(container.work_dir) if container.work_dir else None
+        evt = events.emit_container_status(
+            container_name=container.container_name,
+            run_id=container.run_id,
+            role=container.role,
+            status=container.status.value,
+            exit_code=container.exit_code,
+            error_message=container.error_message,
+            work_dir=work_dir_str,
+        )
+        print(events.to_jsonl(evt), end="", flush=True)
+
 
 class PlainDriver(DisplayDriver):
     """Minimal line-based output for non-TTY (CI, pipe)."""
@@ -270,6 +288,13 @@ class PlainDriver(DisplayDriver):
             print(f"\r[broker] {message} | Elapsed: {elapsed_str}   ", end="", flush=True)
         else:
             print(f"[broker] {message}", flush=True)
+
+    def on_container_status(self, container: "SubtaskContainer") -> None:
+        status = container.status.value
+        if container.exit_code is not None:
+            print(f"[container] {container.container_name}: {status} (exit {container.exit_code})", flush=True)
+        else:
+            print(f"[container] {container.container_name}: {status}", flush=True)
 
     def confirm_dependencies(
         self,
@@ -369,6 +394,19 @@ class CLIDriver(DisplayDriver):
 
     def on_console_message(self, message: str) -> None:
         self._queue.put(events.emit_console(message))
+
+    def on_container_status(self, container: "SubtaskContainer") -> None:
+        work_dir_str = str(container.work_dir) if container.work_dir else None
+        evt = events.emit_container_status(
+            container_name=container.container_name,
+            run_id=container.run_id,
+            role=container.role,
+            status=container.status.value,
+            exit_code=container.exit_code,
+            error_message=container.error_message,
+            work_dir=work_dir_str,
+        )
+        self._queue.put(evt)
 
     def confirm_dependencies(
         self,

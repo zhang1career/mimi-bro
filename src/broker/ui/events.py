@@ -97,6 +97,42 @@ def emit_console(message: str) -> dict[str, Any]:
     return {"type": "console", "message": message}
 
 
+def emit_container_status(
+    container_name: str,
+    run_id: str,
+    role: str,
+    status: str,
+    exit_code: int | None = None,
+    error_message: str | None = None,
+    work_dir: str | None = None,
+) -> dict[str, Any]:
+    """Build container status event for Docker execution.
+    
+    Args:
+        container_name: Docker container name
+        run_id: Subtask run ID
+        role: Subtask role
+        status: Container status (pending, creating, running, stopped, failed, removed)
+        exit_code: Exit code if container finished
+        error_message: Error message if failed
+        work_dir: Path to work dir for log fallback when container is removed
+    """
+    evt: dict[str, Any] = {
+        "type": "container_status",
+        "container_name": container_name,
+        "run_id": run_id,
+        "role": role,
+        "status": status,
+    }
+    if exit_code is not None:
+        evt["exit_code"] = exit_code
+    if error_message:
+        evt["error_message"] = error_message
+    if work_dir:
+        evt["work_dir"] = work_dir
+    return evt
+
+
 def emit_confirm_deps_request(
     request_id: str,
     graph_text: str,

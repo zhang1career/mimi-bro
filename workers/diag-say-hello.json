@@ -1,0 +1,14 @@
+{
+  "worker": {
+    "id": "diag-say-hello",
+    "objective": "Diagnostic worker for exit 137",
+    "entrypoint": "."
+  },
+  "plans": [
+    {
+      "id": "say-hello",
+      "role": "agent",
+      "requirement": "say hello"
+    }
+  ]
+}
