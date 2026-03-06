@@ -108,9 +108,35 @@ class ResultMerger:
         self.workspace = Path(workspace).resolve()
         self.execution_state = execution_state
         self.dep_graph = dep_graph
-        self.git = GitWorktree(workspace)
+        self.git = GitWorktree(self.workspace)
         self._conflict_callback: Callable[[MergeResult], bool] | None = None
         self._run_external_fn: Callable[[list[str], Path | None], int] | None = None
+        self._main_repo: Path | None = None
+        self._git_dir: str | None = None
+        self._work_tree: str | None = None
+
+    def _ensure_main_repo_context(self) -> None:
+        """解析主仓库路径及 git-dir、work-tree，确保 merge 始终在主仓库执行，不污染子任务 worktree。"""
+        if self._main_repo is not None:
+            return
+        self._main_repo = Path(GitWorktree.find_main_repo(self.workspace)).resolve()
+        r = subprocess.run(
+            ["git", "rev-parse", "--absolute-git-dir"],
+            cwd=str(self._main_repo),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode == 0:
+            self._git_dir = r.stdout.strip()
+            self._work_tree = str(self._main_repo)
+
+    def _git_base_args(self) -> list[str]:
+        """返回显式指定仓库上下文的 git 前缀，避免污染 worktree。"""
+        self._ensure_main_repo_context()
+        if self._git_dir and self._work_tree:
+            return ["git", f"--git-dir={self._git_dir}", f"--work-tree={self._work_tree}"]
+        return ["git"]
 
     def set_conflict_callback(
         self,
@@ -131,13 +157,16 @@ class ResultMerger:
         check: bool = True,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
-        """执行 git 命令"""
+        """执行 git 命令；始终在主仓库上下文中执行，避免污染子任务 worktree。"""
+        self._ensure_main_repo_context()
         run_env = os.environ.copy()
         if env:
             run_env.update(env)
+        base = self._git_base_args()
+        cwd_val = str(cwd or self._main_repo or self.workspace)
         return subprocess.run(
-            ["git"] + args,
-            cwd=str(cwd or self.workspace),
+            base + args,
+            cwd=cwd_val,
             capture_output=True,
             text=True,
             check=check,
@@ -224,6 +253,7 @@ class ResultMerger:
         不捕获输出，让交互式工具（如 vimdiff、Beyond Compare）正常显示。
         在非 TTY 且无 _run_external_fn 时不执行。
         当 _run_external_fn 已设置（如 TUI），由 driver 挂起界面后在真实终端运行，可弹出 Beyond Compare 等 GUI。
+        显式指定 --git-dir 和 --work-tree，确保 mergetool 操作主仓库，不污染子任务 worktree。
 
         Returns:
             True 如果 mergetool 成功退出，False 否则
@@ -232,16 +262,14 @@ class ResultMerger:
         if not is_interactive_tty() and self._run_external_fn is None:
             return False
 
-        args = ["git", "mergetool"]
+        base = self._git_base_args()
+        args = base + ["mergetool"]
+        cwd = str(self._main_repo or self.workspace)
         if self._run_external_fn is not None:
-            exit_code = self._run_external_fn(args, self.workspace)
+            exit_code = self._run_external_fn(args, Path(cwd))
             return exit_code == 0
         else:
-            result = subprocess.run(
-                args,
-                cwd=str(self.workspace),
-                check=False,
-            )
+            result = subprocess.run(args, cwd=cwd, check=False)
             return result.returncode == 0
 
     def _stage_resolved_files(self) -> bool:
@@ -336,7 +364,9 @@ class ResultMerger:
             if message_callback:
                 message_callback(text)
 
-        msg(f"[merge] workspace={self.workspace} target_branch={target_branch}")
+        self._ensure_main_repo_context()
+        merge_cwd = self._main_repo or self.workspace
+        msg(f"[merge] workspace={merge_cwd} target_branch={target_branch}")
 
         order = get_topological_order(self.dep_graph)
 

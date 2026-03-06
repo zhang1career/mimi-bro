@@ -79,9 +79,8 @@ def get_docker_client():
 
 
 def _load_env_vars() -> dict[str, str]:
-    """Load environment variables for container."""
+    """Load environment variables for container (from project root .env only)."""
     load_dotenv_from_dir(PROJECT_ROOT)
-    load_dotenv_from_dir(PROJECT_ROOT / "docker")
     env_vars = {}
     cursor_api_key = os.getenv("CURSOR_API_KEY")
     if cursor_api_key:

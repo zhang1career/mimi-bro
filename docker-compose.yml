@@ -7,7 +7,7 @@ services:
     labels:
       - "appmap=cursor-agent:8080"
     env_file:
-      - ./docker/.env
+      - ./.env
     # Prepend PATH at runtime so it works without rebuilding the image ($$ = literal $ in container)
     command: ["sh", "-c", "export PATH=/workspace/agents:/workspace/tools/node/bin:$$PATH && exec sleep infinity"]
     ports:
