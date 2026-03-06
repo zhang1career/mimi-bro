@@ -59,7 +59,7 @@ def _load_dotenv_from_project_root() -> None:
 
 def run_container(
     agent_id: str,
-    role: str,
+    plan_id: str,
     task_id="demo",
     workspace=PROJECT_ROOT,
     work_dir_rel: str | None = None,
@@ -74,7 +74,7 @@ def run_container(
     workspace = workspace.resolve() if hasattr(workspace, "resolve") else Path(workspace).resolve()
     src = src.resolve() if hasattr(src, "resolve") else Path(src).resolve()
 
-    print(f"[docker] starting agent {agent_id} ({role})", flush=True)
+    print(f"[docker] starting agent {agent_id} ({plan_id})", flush=True)
 
     container_name = f"agent-{agent_id}"
 
@@ -89,7 +89,7 @@ def run_container(
         # Prepare environment variables: WORKSPACE = work root, SOURCE = source root for cursor --workspace
         env_vars = {
             "AGENT_ID": agent_id,
-            "AGENT_ROLE": role,
+            "AGENT_PLAN_ID": plan_id,
             "TASK_ID": task_id,
             "WORKSPACE": "/workspace",
             "SOURCE": "/source" if src != workspace else "/workspace",

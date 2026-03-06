@@ -9,7 +9,7 @@ import time
 
 def gen_run_id() -> str:
     """
-    Return a unique run id for this execution (e.g. works/{run_id}/{role}).
+    Return a unique run id for this execution (e.g. works/{run_id}/{plan_id}).
     If SNOWFLAKE_ID_API_URL is set, call that API; otherwise generate locally (timestamp + random).
     """
     api_url = os.getenv("SNOWFLAKE_ID_API_URL", "").strip()

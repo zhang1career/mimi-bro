@@ -7,7 +7,6 @@
   "plans": [
     {
       "id": "say-hello",
-      "role": "agent",
       "requirement": "say hello"
     }
   ]

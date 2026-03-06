@@ -22,7 +22,6 @@ def propose(dag):
             data = dag.nodes[node]
             agent = {
                 "id": node,
-                "role": data.get("role", "generic"),
                 "mode": data.get("mode", "agent"),
                 "objective": data.get("objective"),
             }

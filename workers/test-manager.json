@@ -14,7 +14,7 @@
     "test-worker"
   ],
   "plans": [
-    { "id": "agent-manager", "role": "manager", "mode": "agent" }
+    { "id": "agent-manager", "mode": "agent" }
   ],
   "params": {
     "requirement": "Describe the test scenario"

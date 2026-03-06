@@ -16,7 +16,7 @@
     "frontend-dev"
   ],
   "plans": [
-    {"id": "agent-analyzer", "role": "backend", "mode": "agent"}
+    {"id": "agent-analyzer", "mode": "agent"}
   ],
   "params": {
     "scope": "src",

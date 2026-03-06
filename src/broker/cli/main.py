@@ -327,7 +327,7 @@ def stop():
 
 @app.command()
 def run(
-        role: str = typer.Argument(..., help="Agent role, e.g. backend / tester / docs"),
+        plan_id: str = typer.Argument(..., help="Plan ID (e.g. agent-analyzer, agent-backend)"),
         workspace: Path = typer.Option(
             ...,
             "--workspace",
@@ -393,8 +393,7 @@ def run(
         raise typer.Exit(1)
 
     agent = {
-        "id": agent_id,
-        "role": role,
+        "id": plan_id,
         "mode": "agent",
     }
     task = {

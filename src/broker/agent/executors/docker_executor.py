@@ -48,19 +48,19 @@ class DockerExecutor:
         if run_list:
             paths = []
             for a in run_list:
-                wd = build_work_dir(workspace, run_id, a["role"])
+                wd = build_work_dir(workspace, run_id, a["id"])
                 p = str(wd / "agent.log")
-                paths.append({"path": p, "worker_id": worker_id, "role": a["role"]})
+                paths.append({"path": p, "worker_id": worker_id, "plan_id": a["id"]})
             drv.on_log_paths(paths)
             drv.on_progress(0, len(run_list))
 
         for i, agent in enumerate(run_list):
-            work_dir = get_work_dir(workspace, worker_id, run_id, agent["role"])
+            work_dir = get_work_dir(workspace, worker_id, run_id, agent["id"])
             parent_id = os.environ.get(BRO_PARENT_TASK_ID)
             if parent_id:
                 emit_subtask_log_path(agent, worker_id, work_dir, parent_id)
-            write_run_meta(work_dir, run_id, worker_id, agent["role"])
-            work_dir_rel = task_path_rel(run_id, agent["role"])
+            write_run_meta(work_dir, run_id, worker_id, agent["id"])
+            work_dir_rel = task_path_rel(run_id, agent["id"])
             payload = build_task_payload(
                 task, agent,
                 audit_context=audit_context or None,
@@ -70,7 +70,7 @@ class DockerExecutor:
             current_work_dir.set(work_dir)
             run_container(
                 agent["id"],
-                agent["role"],
+                agent["id"],
                 worker_id,
                 workspace,
                 work_dir_rel=work_dir_rel,
@@ -93,12 +93,12 @@ class DockerExecutor:
             run_sub_task_fn: Callable[..., int],
     ) -> Path:
         """Run one agent through its steps via Docker. Returns work_dir."""
-        work_dir = get_work_dir(workspace, worker_id, run_id, agent["role"])
+        work_dir = get_work_dir(workspace, worker_id, run_id, agent["id"])
         parent_id = os.environ.get(BRO_PARENT_TASK_ID)
         if parent_id:
             emit_subtask_log_path(agent, worker_id, work_dir, parent_id)
-        write_run_meta(work_dir, run_id, worker_id, agent["role"])
-        work_dir_rel = task_path_rel(run_id, agent["role"])
+        write_run_meta(work_dir, run_id, worker_id, agent["id"])
+        work_dir_rel = task_path_rel(run_id, agent["id"])
         total_steps = len(steps)
         round_i = 0
         while round_i < total_steps:
@@ -134,7 +134,7 @@ class DockerExecutor:
             current_work_dir.set(work_dir)
             run_container(
                 agent["id"],
-                agent["role"],
+                agent["id"],
                 worker_id,
                 workspace,
                 work_dir_rel=work_dir_rel,

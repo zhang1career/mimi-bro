@@ -357,28 +357,40 @@ class AutoCommitResult:
 def auto_commit_changes(
     worktree_path: Path,
     run_id: str,
-    role: str,
+    plan_id: str,
     objective: str = "",
     requirement: str = "",
     max_message_length: int = 72,
+    main_repo_path: Path | str | None = None,
 ) -> AutoCommitResult:
     """
     自动提交 worktree 中的所有变更。
 
+    当 main_repo_path 存在时，使用主仓库的 git-dir 和 work-tree 显式指定上下文，
+    避免 agent 在容器内破坏 worktree 的 .git（如 git init）导致提交到错误仓库。
+
     Args:
         worktree_path: worktree 路径
         run_id: 运行 ID
-        role: 角色名
+        plan_id: 计划 ID
         objective: 任务目标（用于 commit message）
         requirement: 任务需求（用于 commit message）
         max_message_length: commit message 第一行最大长度
+        main_repo_path: 主仓库路径；若提供则强制使用主仓库上下文
 
     Returns:
         AutoCommitResult 对象
     """
+    worktree_path = Path(worktree_path).resolve()
+    main = Path(main_repo_path).resolve() if main_repo_path else None
+
     def run_git(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+        if main is not None:
+            base = ["git", f"--git-dir={main / '.git'}", f"--work-tree={worktree_path}"]
+        else:
+            base = ["git"]
         return subprocess.run(
-            ["git"] + args,
+            base + args,
             cwd=str(worktree_path),
             capture_output=True,
             text=True,
@@ -407,7 +419,7 @@ def auto_commit_changes(
 
         desc = objective or requirement or "auto commit"
         desc = desc.replace("\n", " ").strip()
-        prefix = f"[{run_id[:8]}][{role}] "
+        prefix = f"[{run_id[:8]}][{plan_id}] "
         available_len = max_message_length - len(prefix)
         if len(desc) > available_len:
             desc = desc[: available_len - 3] + "..."

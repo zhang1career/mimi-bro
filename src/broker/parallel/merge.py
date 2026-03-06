@@ -1,7 +1,7 @@
 """
 结果合并模块。
 
-按依赖顺序 cherry-pick 各子任务的提交到主分支：
+按依赖顺序 merge 各子任务分支到主分支（3-way merge，便于合并并行修改）：
 - 拓扑排序确定合并顺序
 - 检测冲突并暂停
 - 支持清理 worktree 和分支
@@ -157,31 +157,31 @@ class ResultMerger:
         except Exception:
             return []
 
-    def _cherry_pick_commit(self, commit_sha: str) -> tuple[bool, list[str]]:
+    def _merge_branch_git(self, branch: str) -> tuple[bool, list[str]]:
         """
-        Cherry-pick 单个提交。
+        将分支 merge 到当前 HEAD（3-way merge）。
 
         Returns:
             (success, conflict_files)
         """
-        result = self._run_git(["cherry-pick", commit_sha], check=False)
+        result = self._run_git(["merge", branch, "--no-edit"], check=False)
 
         if result.returncode == 0:
             return True, []
 
-        if "CONFLICT" in result.stdout or "conflict" in result.stderr.lower():
+        if "CONFLICT" in result.stdout or "conflict" in (result.stderr or "").lower():
             conflict_files = self._get_conflict_files()
             return False, conflict_files
 
         return False, []
 
-    def _abort_cherry_pick(self) -> None:
-        """中止 cherry-pick"""
-        self._run_git(["cherry-pick", "--abort"], check=False)
+    def _abort_merge(self) -> None:
+        """中止 merge"""
+        self._run_git(["merge", "--abort"], check=False)
 
-    def _continue_cherry_pick(self) -> bool:
-        """继续 cherry-pick（冲突解决后），使用 --no-edit 避免在非交互环境调用 vi。"""
-        result = self._run_git(["cherry-pick", "--continue", "--no-edit"], check=False)
+    def _continue_merge(self) -> bool:
+        """继续 merge（冲突解决后），使用 --no-edit 避免在非交互环境调用 vi。"""
+        result = self._run_git(["merge", "--continue", "--no-edit"], check=False)
         return result.returncode == 0
 
     def _get_conflict_files(self) -> list[str]:
@@ -323,13 +323,15 @@ class ResultMerger:
 
         summary = MergeSummary(target_branch=target_branch)
 
-        order = get_topological_order(self.dep_graph)
-
-        self._run_git(["checkout", target_branch])
-
         def msg(text: str) -> None:
             if message_callback:
                 message_callback(text)
+
+        msg(f"[merge] workspace={self.workspace} target_branch={target_branch}")
+
+        order = get_topological_order(self.dep_graph)
+
+        self._run_git(["checkout", target_branch])
 
         for subtask_id in order:
             subtask = self.execution_state.subtasks.get(subtask_id)
@@ -354,7 +356,9 @@ class ResultMerger:
                 ))
                 continue
 
-            result = self._merge_branch(subtask_id, subtask.branch, target_branch)
+            result = self._merge_branch(
+                subtask_id, subtask.branch, target_branch, message_callback=message_callback
+            )
             summary.results.append(result)
 
             if result.status == MergeStatus.CONFLICT:
@@ -366,46 +370,49 @@ class ResultMerger:
                         resolved = self._resolve_conflicts_interactive(result, message_callback)
                         if resolved:
                             self._stage_resolved_files()
-                            if self._continue_cherry_pick():
+                            if self._continue_merge():
                                 result.status = MergeStatus.MERGED
                                 result.commit_sha = self._get_head_sha()
                                 result.conflict_files = []
                                 msg(f"✓ {subtask_id} merged successfully")
                             else:
-                                msg(f"✗ {subtask_id} cherry-pick continue failed")
-                                self._abort_cherry_pick()
+                                msg(f"✗ {subtask_id} merge continue failed")
+                                self._abort_merge()
                                 break
                         else:
                             msg(f"✗ {subtask_id} conflicts not resolved, aborting")
-                            self._abort_cherry_pick()
+                            self._abort_merge()
                             break
                     else:
                         msg(f"⚠ Conflict in {subtask_id} (no interactive terminal, conflict markers preserved):")
                         for f in result.conflict_files:
                             msg(f"  - {f}")
-                        msg("Run 'git mergetool' manually to resolve, then 'git cherry-pick --continue'")
+                        msg("Run 'git mergetool' manually to resolve, then 'git merge --continue'")
                         break
                 elif self._conflict_callback:
                     resolved = self._conflict_callback(result)
                     if resolved:
-                        if self._continue_cherry_pick():
+                        if self._continue_merge():
                             result.status = MergeStatus.MERGED
                             result.commit_sha = self._get_head_sha()
                             result.conflict_files = []
                         else:
-                            self._abort_cherry_pick()
+                            self._abort_merge()
                             break
                     else:
-                        self._abort_cherry_pick()
+                        self._abort_merge()
                         break
                 else:
-                    self._abort_cherry_pick()
+                    self._abort_merge()
                     break
 
             if result.status == MergeStatus.FAILED:
                 break
 
         summary.finished_at = datetime.now()
+
+        for r in summary.results:
+            msg(f"[merge] result {r.subtask_id}: {r.status.value}" + (f" ({r.error_message})" if r.error_message else ""))
 
         if auto_cleanup:
             self.cleanup_worktrees(force=True)
@@ -417,9 +424,16 @@ class ResultMerger:
         subtask_id: str,
         branch: str,
         target_branch: str,
+        message_callback: Callable[[str], None] | None = None,
     ) -> MergeResult:
-        """合并单个分支"""
+        """merge 单个分支到 target_branch（3-way merge，合并并行修改）"""
         commits = self._get_branch_commits(branch, target_branch)
+
+        def _msg(text: str) -> None:
+            if message_callback:
+                message_callback(text)
+
+        _msg(f"[merge] {subtask_id} branch={branch} commits={len(commits)} (base={target_branch})")
 
         if not commits:
             return MergeResult(
@@ -429,24 +443,22 @@ class ResultMerger:
                 error_message="No new commits",
             )
 
-        for commit in commits:
-            success, conflict_files = self._cherry_pick_commit(commit)
+        success, conflict_files = self._merge_branch_git(branch)
 
-            if not success:
-                if conflict_files:
-                    return MergeResult(
-                        subtask_id=subtask_id,
-                        branch=branch,
-                        status=MergeStatus.CONFLICT,
-                        conflict_files=conflict_files,
-                    )
-                else:
-                    return MergeResult(
-                        subtask_id=subtask_id,
-                        branch=branch,
-                        status=MergeStatus.FAILED,
-                        error_message="Cherry-pick failed",
-                    )
+        if not success:
+            if conflict_files:
+                return MergeResult(
+                    subtask_id=subtask_id,
+                    branch=branch,
+                    status=MergeStatus.CONFLICT,
+                    conflict_files=conflict_files,
+                )
+            return MergeResult(
+                subtask_id=subtask_id,
+                branch=branch,
+                status=MergeStatus.FAILED,
+                error_message="Merge failed",
+            )
 
         return MergeResult(
             subtask_id=subtask_id,

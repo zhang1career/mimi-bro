@@ -24,7 +24,6 @@ def plan_task(task: dict) -> nx.DiGraph:
         dag.add_node(
             nid,
             exec_type=exec_type.value,
-            role=item.get("role", "generic"),
             mode=item.get("mode", "agent"),
             objective=item.get("objective"),
             skill=item.get("skill", ""),

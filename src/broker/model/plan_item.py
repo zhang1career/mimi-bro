@@ -18,7 +18,6 @@ Schema 字段：
 - requirement: 需求描述（传给 skill）
 
 元信息：
-- role: 可选，角色标识
 - scope: 可选，代码范围
 - params: 可选，其他参数
 """
@@ -52,7 +51,6 @@ class PlanItem:
     requirement: str = ""
 
     # 元信息
-    role: str = ""
     scope: str = ""
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -69,8 +67,6 @@ class PlanItem:
             result["objective"] = self.objective
         if self.requirement:
             result["requirement"] = self.requirement
-        if self.role:
-            result["role"] = self.role
         if self.scope:
             result["scope"] = self.scope
         if self.params:
@@ -93,11 +89,10 @@ def parse_plan_item(item: dict[str, Any]) -> PlanItem:
         id=item.get("id", ""),
         exec_type=exec_type,
         deps=list(item.get("deps") or []),
-        skill=item.get("../skill", ""),
-        mode=item.get("mode", "../agent"),
+        skill=item.get("skill", ""),
+        mode=item.get("mode", "agent"),
         objective=item.get("objective", ""),
         requirement=item.get("requirement", ""),
-        role=item.get("role", ""),
         scope=item.get("scope", ""),
         params=dict(item.get("params") or {}),
     )

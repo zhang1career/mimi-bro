@@ -58,7 +58,7 @@ def run_one_subtask_local(
     """Run one breakdown subtask via local cursor-cli. Returns exit code."""
     from broker.utils.traceback_util import error_summary_for_console
     subtask_id = item.get("id", "?")
-    role = item.get("role") or item.get("id", "worker")
+    plan_id = item.get("id", "worker")
 
     cmd = build_cmd_fn(
         item,
@@ -103,7 +103,7 @@ def run_one_subtask_local(
                             drv.on_log_paths([{
                                 "path": data.get("path", ""),
                                 "worker_id": data.get("worker_id") or data.get("task_id"),
-                                "role": data.get("role"),
+                                "plan_id": data.get("plan_id", data.get("role")),
                                 "parent_id": parent_worker_id,
                             }])
                         except json.JSONDecodeError:
@@ -175,30 +175,30 @@ def run_one_subtask_docker(
     from broker.utils.id_client import gen_run_id
 
     subtask_id = item.get("id", "?")
-    role = item.get("role") or item.get("id", "worker")
+    plan_id = item.get("id", "worker")
 
     if (item.get("objective") or item.get("requirement")) and not item.get("skill"):
         # INLINE: run cursor-agent directly from host
         subtask_run_id = child_run_id or gen_run_id()
-        subtask_work_dir = get_work_dir(workspace, run_id=subtask_run_id, role=role, check_conflict=False)
+        subtask_work_dir = get_work_dir(workspace, run_id=subtask_run_id, plan_id=plan_id, check_conflict=False)
         log_path = str(subtask_work_dir / "agent.log")
         drv.on_log_paths([{
             "path": log_path,
             "worker_id": parent_worker_id,
-            "role": role,
+            "plan_id": plan_id,
             "parent_id": work_dir.name,
         }])
-        write_run_meta(subtask_work_dir, subtask_run_id, parent_worker_id, role, parent_run_id)
-        agent = {"id": role, "role": role, "mode": "plan", **item}
+        write_run_meta(subtask_work_dir, subtask_run_id, parent_worker_id, plan_id, parent_run_id)
+        agent = {"id": plan_id, "mode": "plan", **item}
         payload = build_task_payload(task, agent, work_dir=subtask_work_dir)
         write_task_json(workspace, payload, subtask_work_dir)
         drv.on_console_message(f"[container] Starting cursor-agent for {subtask_id}...")
         try:
             run_container(
-                role, role,
+                plan_id, plan_id,
                 task_id=subtask_run_id,
                 workspace=workspace,
-                work_dir_rel=task_path_rel(subtask_run_id, role),
+                work_dir_rel=task_path_rel(subtask_run_id, plan_id),
                 source=Path(source_path),
             )
             return 0

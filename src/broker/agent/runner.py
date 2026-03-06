@@ -198,7 +198,7 @@ def _ensure_subtask_ids(items: list[dict]) -> list[dict]:
             if exec_type == PlanItemType.SKILL:
                 base_id = item_copy.get("skill") or item_copy.get("skill_id") or "subtask"
             else:  # INLINE
-                base_id = item_copy.get("role") or "inline"
+                base_id = item_copy.get("id") or "inline"
             item_copy["id"] = _generate_subtask_id(base_id, i)
         result.append(item_copy)
     return result
@@ -264,10 +264,10 @@ def _build_subtask_command(
         objective = item.get("objective") or item.get("requirement") or default_objective or ""
         if not objective:
             return None
-        role = item.get("role", "worker")
+        plan_id = item.get("id", "worker")
         ws = workspace_path or src_path
-        task_id = worker_id or item.get("id", role)
-        cmd = f'bro run {role} --workspace "{ws}" --source "{src_path}" --objective "{objective}" --task-id "{task_id}"'
+        task_id = worker_id or plan_id
+        cmd = f'bro run {plan_id} --workspace "{ws}" --source "{src_path}" --objective "{objective}" --task-id "{task_id}"'
         if run_id:
             cmd += f' --run-id "{run_id}"'
         if parent_run_id:
@@ -528,14 +528,13 @@ def _execute_parallel_items(
 
     log_paths = []
     for item in items:
-        subtask_id = item.get("id", "unknown")
-        role = item.get("role") or subtask_id
-        wd = build_work_dir(workspace, run_id, role)
+        plan_id = item.get("id", "unknown")
+        wd = build_work_dir(workspace, run_id, plan_id)
         log_path = wd / "agent.log"
         log_paths.append({
             "path": str(log_path),
             "worker_id": worker_id,
-            "role": role,
+            "plan_id": plan_id,
         })
     drv.on_log_paths(log_paths)
     drv.on_progress(0, total_items)
@@ -565,7 +564,6 @@ def _execute_parallel_items(
             "objective": subtask.objective,
             "mode": subtask.mode,
             "scope": subtask.scope,
-            "role": subtask.role,
         }
         effective_run_id = child_run_id if child_run_id else run_id
         effective_parent_run_id = parent_run_id if child_run_id else None
@@ -631,20 +629,20 @@ def _execute_parallel_items(
             # Docker parallel: host creates cursor-agent / runs skill directly (no bro-subtask)
             if (_item.get("objective") or _item.get("requirement")) and not _item.get("skill"):
                 # INLINE: run cursor-agent directly from host
-                _role = subtask.role or subtask.id
+                _plan_id = subtask.id
                 subtask_run_id = effective_run_id or gen_run_id()
-                work_dir = get_work_dir(workspace, run_id=subtask_run_id, role=_role)
-                write_run_meta(work_dir, subtask_run_id, worker_id, _role, effective_parent_run_id)
-                agent = {"id": _role, "role": _role, "mode": "plan", **_item}
+                work_dir = get_work_dir(workspace, run_id=subtask_run_id, plan_id=_plan_id)
+                write_run_meta(work_dir, subtask_run_id, worker_id, _plan_id, effective_parent_run_id)
+                agent = {"id": _plan_id, "mode": "plan", **_item}
                 payload = build_task_payload(task, agent)
                 write_task_json(workspace, payload, work_dir)
                 drv.on_console_message(f"[container] Starting cursor-agent for {subtask.id}...")
                 try:
                     run_container(
-                        _role, _role,
+                        _plan_id, _plan_id,
                         task_id=subtask_run_id,
                         workspace=workspace,
-                        work_dir_rel=task_path_rel(subtask_run_id, _role),
+                        work_dir_rel=task_path_rel(subtask_run_id, _plan_id),
                         source=worktree_path,
                     )
                     return 0
@@ -1065,8 +1063,8 @@ def validate_agents_and_task(agents: list, task: dict) -> None:
     for i, a in enumerate(agents):
         if not isinstance(a, dict):
             raise ValueError(f"agents[{i}] must be a dict")
-        if "id" not in a or "role" not in a:
-            raise ValueError(f"agents[{i}] must have 'id' and 'role'")
+        if "id" not in a:
+            raise ValueError(f"agents[{i}] must have 'id'")
     if not isinstance(task, dict):
         raise ValueError("task must be a dict")
 
@@ -1088,7 +1086,7 @@ def run_agents(
         docker_workspace: str = "/workspace",
 ):
     """
-    Run agents with task payload. Writes task.json under works/{run_id}/{role}/.
+    Run agents with task payload. Writes task.json under works/{run_id}/{plan_id}/.
     - workspace: work path (task.json, agent.log, works/).
     - source: source path (source code, scripts) for agent to operate on; default = workspace.
     - If task has "steps", runs multi-round: first agent runs once per step.
@@ -1299,7 +1297,7 @@ def _execute_breakdown(
 
 
 def _load_first_agent_breakdown(run_id, run_list, workspace):
-    first_work_dir = build_work_dir(workspace, run_id, run_list[0]["role"])
+    first_work_dir = build_work_dir(workspace, run_id, run_list[0]["id"])
     breakdown_items = _read_breakdown_from_dir(first_work_dir)
     return breakdown_items, first_work_dir
 
@@ -1320,7 +1318,7 @@ def _read_breakdown_from_dir(work_dir: Path) -> list[dict]:
 def _auto_audit(drv, run_id, run_list, task, worker_id, verbose, workspace):
     task_expected = get_task_block(task).get("expected_results")
     for agent in run_list:
-        work_dir = build_work_dir(workspace, run_id, agent["role"])
+        work_dir = build_work_dir(workspace, run_id, agent["id"])
         last_result = None
         result_file = work_dir / "result.json"
         if result_file.exists():
@@ -1360,7 +1358,7 @@ def run_agents_local(
 ) -> None:
     """
     Run agents by invoking local cursor-cli (no Docker). For bootstrap when no agent image exists.
-    Same task layout as run_agents: writes task.json under works/{run_id}/{role}/.
+    Same task layout as run_agents: writes task.json under works/{run_id}/{plan_id}/.
     Steps may have validate_with (broker runs sub-task directly, no agent shell - avoids timeout).
     source: path for agent to operate on; default = workspace. batches = parallel-ready level order.
     auto: skip confirmation between steps (human-in-loop pause).

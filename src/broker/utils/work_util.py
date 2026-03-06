@@ -6,9 +6,9 @@ from pathlib import Path
 from broker.model.task import get_task_block
 from broker.task_types import get_task_type_config
 
-# 任务唯一性约定：run_id + role
-# - 路径：{run_id}/{role} → task_path_rel, build_work_dir
-# - 命名：{run_id}-{role} → task_slug (容器、分支、文件)
+# 任务唯一性约定：run_id + plan_id
+# - 路径：{run_id}/{plan_id} → task_path_rel, build_work_dir
+# - 命名：{run_id}-{plan_id} → task_slug (容器、分支、文件)
 
 BREAKDOWN_JSON = "breakdown.json"
 RUN_META_FILE = "run_meta.json"
@@ -16,68 +16,68 @@ RUN_MAPPINGS_FILE = "run_mappings.json"
 
 
 class WorkDirConflictError(Exception):
-    """工作目录 run_id + role 冲突异常"""
+    """工作目录 run_id + plan_id 冲突异常"""
     pass
 
 
 def build_work_dir(
         workspace: Path,
         run_id: str,
-        role: str,
+        plan_id: str,
         task_id: str | None = None,
 ) -> Path:
     """
-    构建工作目录路径：workspace/works/{run_id}/{role}
+    构建工作目录路径：workspace/works/{run_id}/{plan_id}
     
-    新结构：两级目录，run_id 作为批次标识，role 作为子任务标识。
+    新结构：两级目录，run_id 作为批次标识，plan_id 作为子任务标识（父上下文的 id）。
     task_id 参数保留用于兼容，但不再用于目录名。
     """
-    return workspace / 'works' / run_id / role
+    return workspace / 'works' / run_id / plan_id
 
 
-def task_path_rel(run_id: str, role: str) -> str:
+def task_path_rel(run_id: str, plan_id: str) -> str:
     """
-    任务路径相对段：works/{run_id}/{role}
+    任务路径相对段：works/{run_id}/{plan_id}
     用于 work_dir_rel、Docker WORK_DIR 等路径拼接。
     """
-    return f"works/{run_id}/{role}"
+    return f"works/{run_id}/{plan_id}"
 
 
 def task_slug(
     run_id: str,
-    role: str,
+    plan_id: str,
     truncate_run_id: int | None = None,
-    max_role_len: int = 50,
+    max_plan_id_len: int = 50,
 ) -> str:
     """
-    任务命名 slug：{run_id}-{role}，用于容器名、分支名、文件名等。
+    任务命名 slug：{run_id}-{plan_id}，用于容器名、分支名、文件名等。
     
     Args:
         run_id: 运行 ID
-        role: 角色
+        plan_id: 计划 ID（父上下文的 id）
         truncate_run_id: 若指定，取 run_id 末 N 位（如 8 用于容器名）
-        max_role_len: role 最大长度，容器名等场景可用 20
+        max_plan_id_len: plan_id 最大长度，容器名等场景可用 20
     
     Returns:
-        安全命名串，如 "17725117268607616-setup" 或 "768607616-setup"
+        安全命名串
     """
     r = run_id[-truncate_run_id:] if truncate_run_id and len(run_id) > truncate_run_id else run_id
-    safe_role = role.replace("/", "-").replace("\\", "-")[:max_role_len]
-    return f"{r}-{safe_role}"
+    safe_plan_id = plan_id.replace("/", "-").replace("\\", "-")[:max_plan_id_len]
+    return f"{r}-{safe_plan_id}"
 
 
-def check_work_dir_conflict(workspace: Path, run_id: str, role: str) -> None:
+def check_work_dir_conflict(workspace: Path, run_id: str, plan_id: str) -> None:
     """
-    检查 run_id + role 的唯一性，如果目录已存在且有内容则抛异常。
+    检查 run_id + plan_id 的唯一性，如果目录已存在且有内容则抛异常。
     
     Raises:
         WorkDirConflictError: 如果目录已存在且包含 task.json
     """
-    work_dir = build_work_dir(workspace, run_id, role)
+    work_dir = build_work_dir(workspace, run_id, plan_id)
     if work_dir.exists() and (work_dir / "task.json").exists():
         raise WorkDirConflictError(
             f"工作目录冲突：{work_dir} 已存在。"
-            f"run_id={run_id}, role={role} 组合必须唯一。"
+            f"run_id={run_id}, plan_id={plan_id} 组合必须唯一。"
         )
 
 
@@ -85,17 +85,17 @@ def get_work_dir(
         workspace: Path,
         task_id: str | None = None,
         run_id: str | None = None,
-        role: str | None = None,
+        plan_id: str | None = None,
         check_conflict: bool = True,
 ) -> Path:
     """
-    获取工作目录。新结构：workspace/works/{run_id}/{role}
+    获取工作目录。新结构：workspace/works/{run_id}/{plan_id}
     
     Args:
         workspace: 工作空间根目录
         task_id: 任务 ID（保留用于兼容，不再用于目录名）
         run_id: 运行批次 ID
-        role: 角色/子任务标识
+        plan_id: 计划 ID（父上下文的 id）
         check_conflict: 是否检查唯一性冲突（默认 True）
     
     Returns:
@@ -104,10 +104,10 @@ def get_work_dir(
     Raises:
         WorkDirConflictError: 如果 check_conflict=True 且目录已存在
     """
-    if run_id is not None and role is not None:
+    if run_id is not None and plan_id is not None:
         if check_conflict:
-            check_work_dir_conflict(workspace, run_id, role)
-        work_dir = build_work_dir(workspace, run_id, role, task_id)
+            check_work_dir_conflict(workspace, run_id, plan_id)
+        work_dir = build_work_dir(workspace, run_id, plan_id, task_id)
     else:
         work_dir = workspace / 'works'
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -118,7 +118,7 @@ def write_run_meta(
         work_dir: Path,
         run_id: str,
         worker_id: str,
-        role: str,
+        plan_id: str,
         parent_run_id: str | None = None,
 ) -> Path:
     """
@@ -128,7 +128,7 @@ def write_run_meta(
         work_dir: 工作目录
         run_id: 当前运行 ID
         worker_id: worker ID
-        role: 角色
+        plan_id: 计划 ID（父上下文的 id）
         parent_run_id: 父任务的 run_id（用于 breakdown 子任务追溯）
                        如果为 None，会尝试从环境变量 BRO_PARENT_RUN_ID 读取
     
@@ -140,7 +140,7 @@ def write_run_meta(
     meta = {
         "run_id": run_id,
         "worker_id": worker_id,
-        "role": role,
+        "plan_id": plan_id,
     }
     
     effective_parent_run_id = parent_run_id or os.environ.get("BRO_PARENT_RUN_ID")

@@ -5,7 +5,7 @@
     "entrypoint": "."
   },
   "plans": [
-    {"id": "a", "role": "a", "requirement": "say hello"},
-    {"id": "b", "role": "b", "requirement": "say hello"}
+    {"id": "a", "requirement": "say hello"},
+    {"id": "b", "requirement": "say hello"}
   ]
 }

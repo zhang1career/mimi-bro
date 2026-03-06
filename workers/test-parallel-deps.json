@@ -10,10 +10,10 @@
     "entrypoint": "."
   },
   "plans": [
-    { "id": "agent-first", "role": "first", "mode": "agent" },
-    { "id": "agent-parallel-a", "role": "parallel-a", "mode": "agent", "objective": "say 'World'", "deps": ["agent-first"] },
-    { "id": "agent-parallel-b", "role": "parallel-b", "mode": "agent", "objective": "say 'everyone'", "deps": ["agent-first"] },
-    { "id": "agent-final", "role": "final", "mode": "agent", "objective": "say '!'", "deps": ["agent-parallel-a", "agent-parallel-b"] }
+    { "id": "agent-first", "mode": "agent" },
+    { "id": "agent-parallel-a", "mode": "agent", "objective": "say 'World'", "deps": ["agent-first"] },
+    { "id": "agent-parallel-b", "mode": "agent", "objective": "say 'everyone'", "deps": ["agent-first"] },
+    { "id": "agent-final", "mode": "agent", "objective": "say '!'", "deps": ["agent-parallel-a", "agent-parallel-b"] }
   ],
   "params": {
     "requirement": "Describe the parallel test with dependencies"

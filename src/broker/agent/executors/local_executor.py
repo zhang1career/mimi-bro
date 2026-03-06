@@ -56,19 +56,19 @@ class LocalExecutor:
         if run_list:
             paths = []
             for a in run_list:
-                wd = build_work_dir(workspace, run_id, a["role"])
+                wd = build_work_dir(workspace, run_id, a["id"])
                 p = str(wd / "agent.log")
-                paths.append({"path": p, "worker_id": worker_id, "role": a["role"]})
+                paths.append({"path": p, "worker_id": worker_id, "plan_id": a["id"]})
                 parent_id = os.environ.get(BRO_PARENT_TASK_ID)
                 if parent_id:
-                    line = json.dumps({"path": p, "worker_id": worker_id, "role": a["role"]})
+                    line = json.dumps({"path": p, "worker_id": worker_id, "plan_id": a["id"]})
                     locked_append(running_file(parent_id), line)
             drv.on_log_paths(paths)
             drv.on_progress(0, len(run_list))
 
         for i, agent in enumerate(run_list):
-            work_dir = get_work_dir(workspace, worker_id, run_id, agent["role"])
-            write_run_meta(work_dir, run_id, worker_id, agent["role"])
+            work_dir = get_work_dir(workspace, worker_id, run_id, agent["id"])
+            write_run_meta(work_dir, run_id, worker_id, agent["id"])
             payload = build_task_payload(
                 task, agent,
                 audit_context=audit_context or None,
@@ -77,7 +77,7 @@ class LocalExecutor:
             write_task_json(workspace, payload, work_dir)
             _obj = get_task_block(task).get("objective", "")
             obj_preview = _obj[:80] + ("..." if len(_obj) > 80 else "")
-            drv.on_task_assigned(worker_id, obj_preview, assignee=agent["role"])
+            drv.on_task_assigned(worker_id, obj_preview, assignee=agent["id"])
             current_work_dir.set(work_dir)
             code = run_local(workspace, work_dir, source=source, verbose=verbose, cursor_api_key=cursor_api_key)
             last_code = code
@@ -104,13 +104,13 @@ class LocalExecutor:
             cursor_api_key: str | None = None,
     ) -> Path:
         """Run one agent through its steps via local cursor-cli. Returns work_dir."""
-        work_dir = get_work_dir(workspace, worker_id, run_id, agent["role"])
-        write_run_meta(work_dir, run_id, worker_id, agent["role"])
+        work_dir = get_work_dir(workspace, worker_id, run_id, agent["id"])
+        write_run_meta(work_dir, run_id, worker_id, agent["id"])
         log_path = work_dir / "agent.log"
         parent_id = os.environ.get(BRO_PARENT_TASK_ID)
         if parent_id:
             emit_subtask_log_path(agent, worker_id, work_dir, parent_id)
-        drv.on_log_paths([{"path": str(log_path), "worker_id": worker_id, "role": agent["role"]}])
+        drv.on_log_paths([{"path": str(log_path), "worker_id": worker_id, "plan_id": agent["id"]}])
         total_steps = len(steps)
         round_i = 0
         while round_i < total_steps:
@@ -148,7 +148,7 @@ class LocalExecutor:
             drv.on_task_assigned(
                 worker_id,
                 round_objective[:80] + ("..." if len(round_objective) > 80 else ""),
-                assignee=agent["role"],
+                assignee=agent["id"],
             )
             current_work_dir.set(work_dir)
             code = run_local(workspace, work_dir, source=source, verbose=verbose, cursor_api_key=cursor_api_key)
