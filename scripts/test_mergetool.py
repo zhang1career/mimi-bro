@@ -98,13 +98,13 @@ def _get_current_branch(repo: Path) -> str:
     return r.stdout.strip() if r.returncode == 0 else "main"
 
 
-def _ensure_on_main(repo: Path) -> None:
-    """确保主仓库在 main 分支。"""
-    subprocess.run(["git", "checkout", "main"], cwd=str(repo), capture_output=True, text=True, check=True)
+def _ensure_on_branch(repo: Path, branch: str) -> None:
+    """确保主仓库在指定分支。"""
+    subprocess.run(["git", "checkout", branch], cwd=str(repo), capture_output=True, text=True, check=True)
 
 
-def _cleanup_existing(repo: Path) -> None:
-    """若 worktree/分支 a、b 已存在则清理（便于重复测试）。"""
+def _cleanup_existing(repo: Path, checkout_after: str = "main") -> None:
+    """若 worktree/分支 a、b 已存在则清理（便于重复测试）。清理后 checkout 到 checkout_after。"""
     git = GitWorktree(repo)
     for branch in ("a", "b"):
         entry = git.find_worktree_by_branch(branch)
@@ -112,7 +112,7 @@ def _cleanup_existing(repo: Path) -> None:
             git.remove_worktree(entry.path, force=True)
         if git.branch_exists(branch, include_remote=False):
             git.delete_branch(branch, force=True)
-    subprocess.run(["git", "checkout", "main"], cwd=str(repo), capture_output=True, text=True, check=True)
+    subprocess.run(["git", "checkout", checkout_after], cwd=str(repo), capture_output=True, text=True, check=True)
 
 
 def main() -> int:
@@ -137,6 +137,9 @@ def main() -> int:
         print(f"Error: {repo} is not a git repository (no .git)", file=sys.stderr)
         return 1
 
+    # 与 bro submit 一致：在任意操作前捕获当前分支，作为 merge 目标
+    initial_branch = _get_current_branch(repo)
+
     run_id = "test-mergetool"
 
     if args.no_cleanup:
@@ -147,13 +150,11 @@ def main() -> int:
                 print(f"Error: branch or worktree '{branch}' exists. Use default (with cleanup) or remove manually.", file=sys.stderr)
                 return 1
     else:
-        _cleanup_existing(repo)
+        _cleanup_existing(repo, checkout_after=initial_branch)
 
-    _ensure_on_main(repo)
-    # 确保 main 有 test.json 的初始提交
+    _ensure_on_branch(repo, initial_branch)
+    # 确保有 test.json 的初始提交
     setup_initial_commit(repo)
-    # 合并目标为当前（原始）分支
-    target_branch = _get_current_branch(repo)
 
     info_a, info_b = setup_with_worktrees(repo, run_id)
 
@@ -194,7 +195,7 @@ def main() -> int:
         subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=str(repo), capture_output=True, text=True, check=False)
         subprocess.run(["git", "clean", "-fd"], cwd=str(repo), capture_output=True, text=True, check=False)
         summary = merger.merge(
-            target_branch=target_branch,
+            target_branch=initial_branch,
             auto_cleanup=False,
             interactive=True,
             message_callback=msg_cb,
