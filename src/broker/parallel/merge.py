@@ -342,11 +342,22 @@ class ResultMerger:
 
         self._run_git(["checkout", target_branch])
 
-        # 确保主仓库 worktree 干净，否则 merge 会失败（如 "local changes would be overwritten"）
+        # 主仓库 worktree 不干净会导致 merge 失败（如 "Your local changes would be overwritten"）
+        # 自动 stash，合并完成后 pop；若 pop 有冲突则调用 mergetool 解决
+        stashed = False
         status = self._run_git(["status", "--porcelain"], check=False)
         if status.returncode == 0 and status.stdout.strip():
-            msg("⚠ Working tree has uncommitted changes; merge may fail. Consider: git stash")
-            msg("  " + status.stdout.strip().split("\n")[0][:60])
+            msg("Working tree has uncommitted changes; stashing before merge...")
+            result = self._run_git(
+                ["stash", "push", "-m", "bro: pre-merge stash"],
+                check=False,
+            )
+            if result.returncode == 0:
+                stashed = True
+                msg("Stash created. Merge will run on clean tree.")
+            else:
+                msg("⚠ git stash failed; merge may fail. Consider: git stash")
+                msg("  " + (result.stderr or result.stdout or "").strip()[:100])
 
         for subtask_id in order:
             subtask = self.execution_state.subtasks.get(subtask_id)
@@ -428,6 +439,22 @@ class ResultMerger:
 
         for r in summary.results:
             msg(f"[merge] result {r.subtask_id}: {r.status.value}" + (f" ({r.error_message})" if r.error_message else ""))
+
+        # 合并前若执行了 stash，此处恢复
+        if stashed:
+            msg("[merge] Restoring stashed changes...")
+            pop_result = self._run_git(["stash", "pop"], check=False)
+            if pop_result.returncode != 0:
+                # stash pop 可能因冲突失败，尝试 mergetool 解决后 drop
+                conflict_files = self._get_conflict_files()
+                if conflict_files and (is_interactive_tty() or self._run_external_fn is not None):
+                    msg("Stash pop had conflicts; launching mergetool...")
+                    self._run_mergetool()
+                    self._stage_resolved_files()
+                    self._run_git(["stash", "drop"], check=False)
+                    msg("Stash conflicts resolved.")
+                else:
+                    msg("⚠ Stash pop failed (conflicts). Run 'git mergetool' and 'git stash drop' manually.")
 
         if auto_cleanup:
             self.cleanup_worktrees(force=True)
