@@ -30,7 +30,7 @@
 
 - **Local runner** — Invokes host cursor-cli (cursor-agent / agent / CURSOR_CLI_PATH); writes `task.json` in work dir; streams to `agent.log`; writes `result.json` on exit. Timeout 30 min. No autonomous merge.
 - **Docker runner** — Optional; container lifecycle via Docker SDK; same work-dir contract.
-- **Work dirs** — `workspace/works/{{task_id}}-{{run_id}}-{{role}}/` with `task.json`, `result.json`, `agent.log` (DESIGN §4.6).
+- **Work dirs** — `workspace/works/{run_id}/{plan_id}/` with `task.json`, `result.json`, `agent.log` (DESIGN §4.6).
 - **Multi-step** — Steps with optional `validate_with`; broker can run validation sub-tasks directly (no agent shell). Progress used to skip completed steps.
 
 ### Validation & constraints
@@ -43,7 +43,7 @@
 ## 2. What works
 
 - **End-to-end local flow** — `bro submit tasks/<task>.json -w <workspace> --local [--auto]` loads task, plans DAG, proposes plans, selects (auto or prompt), runs agents in batch order, aggregates results from each work dir’s `result.json`.
-- **Single-agent greeting** — Example run in `works/greetings-17715549945162046-backend/`: `task.json` + `agent.log` (cursor-cli session with success result).
+- **Single-agent greeting** — Example run in `works/{run_id}/agent-hello/`: `task.json` + `agent.log` (cursor-cli session with success result).
 - **Template params** — `--arg KEY=VALUE` and worker `params` fill `{{key}}` in worker.id, objective, instructions.
 - **Fresh run** — `--fresh` clears progress and runs from step 0.
 - **Decision log** — Plan choice and source written to `logs/decisions.jsonl`.

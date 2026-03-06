@@ -9,6 +9,7 @@ Git worktree 管理模块。
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -354,36 +355,89 @@ class AutoCommitResult:
     skipped: bool = False
 
 
+def _get_worktree_index_path(worktree_path: Path) -> Path | None:
+    """从 worktree 的 .git 文件解析出该 worktree 的 index 路径，避免污染主仓库 index。"""
+    git_file = worktree_path / ".git"
+    if not git_file.is_file():
+        return None
+    content = git_file.read_text().strip()
+    if not content.startswith("gitdir:"):
+        return None
+    gitdir = content[7:].strip()
+    gitdir_path = Path(gitdir)
+    if not gitdir_path.is_absolute():
+        gitdir_path = (worktree_path / gitdir_path).resolve()
+    index_path = gitdir_path / "index"
+    return index_path if index_path.exists() else None
+
+
 def auto_commit_changes(
     worktree_path: Path,
     run_id: str,
-    role: str,
+    plan_id: str,
     objective: str = "",
     requirement: str = "",
     max_message_length: int = 72,
+    main_repo_path: Path | str | None = None,
+    branch: str | None = None,
 ) -> AutoCommitResult:
     """
     自动提交 worktree 中的所有变更。
 
+    当 main_repo_path 存在时，使用主仓库的 git-dir 和 work-tree 显式指定上下文，
+    避免 agent 在容器内破坏 worktree 的 .git（如 git init）导致提交到错误仓库。
+    此时必须同时传入 branch，并设置 GIT_INDEX_FILE 指向 worktree 的 index，
+    否则会污染主仓库 index 导致后续 merge 失败。
+
     Args:
         worktree_path: worktree 路径
         run_id: 运行 ID
-        role: 角色名
+        plan_id: 计划 ID
         objective: 任务目标（用于 commit message）
         requirement: 任务需求（用于 commit message）
         max_message_length: commit message 第一行最大长度
+        main_repo_path: 主仓库路径；若提供则强制使用主仓库上下文
+        branch: 该 worktree 对应的分支名；与 main_repo_path 同时提供时用于正确写入 refs/heads/<branch>
 
     Returns:
         AutoCommitResult 对象
     """
+    worktree_path = Path(worktree_path).resolve()
+    main = Path(main_repo_path).resolve() if main_repo_path else None
+    worktree_index = _get_worktree_index_path(worktree_path) if main else None
+
     def run_git(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        if main is not None and worktree_index is not None:
+            env["GIT_INDEX_FILE"] = str(worktree_index)
+        if main is not None:
+            base = ["git", f"--git-dir={main / '.git'}", f"--work-tree={worktree_path}"]
+        else:
+            base = ["git"]
         return subprocess.run(
-            ["git"] + args,
+            base + args,
             cwd=str(worktree_path),
             capture_output=True,
             text=True,
             check=check,
+            env=env,
         )
+
+    def run_git_main(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+        """仅用主仓库 git-dir，不指定 work-tree（用于 symbolic-ref 等）"""
+        return subprocess.run(
+            ["git", f"--git-dir={main / '.git'}"] + args,
+            cwd=str(main),
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    saved_head_ref: str | None = None
+    if main is not None and branch:
+        sym = run_git_main(["symbolic-ref", "HEAD"], check=False)
+        if sym.returncode == 0:
+            saved_head_ref = sym.stdout.strip()
 
     try:
         diff_result = run_git(["diff", "--quiet"], check=False)
@@ -403,11 +457,14 @@ def auto_commit_changes(
                 message="No changes to commit",
             )
 
+        if main is not None and branch:
+            run_git_main(["symbolic-ref", "HEAD", f"refs/heads/{branch}"])
+
         run_git(["add", "-A"])
 
         desc = objective or requirement or "auto commit"
         desc = desc.replace("\n", " ").strip()
-        prefix = f"[{run_id[:8]}][{role}] "
+        prefix = f"[{run_id[:8]}][{plan_id}] "
         available_len = max_message_length - len(prefix)
         if len(desc) > available_len:
             desc = desc[: available_len - 3] + "..."
@@ -443,6 +500,9 @@ def auto_commit_changes(
             success=False,
             message=f"Error: {str(e)}",
         )
+    finally:
+        if saved_head_ref is not None:
+            run_git_main(["symbolic-ref", "HEAD", saved_head_ref], check=False)
 
 
 def _convert_gitfile_to_relative(worktree_path: Path) -> None:

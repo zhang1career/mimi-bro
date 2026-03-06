@@ -9,8 +9,8 @@
     "entrypoint": "."
   },
   "plans": [
-    {"id": "agent-hello", "role": "backend_1", "mode": "ask"},
-    {"id": "agent-bye", "role": "backend_2", "mode": "ask"}
+    {"id": "agent-hello", "mode": "ask"},
+    {"id": "agent-bye", "mode": "ask"}
   ],
   "params": {
     "task_id": "test-greetings",

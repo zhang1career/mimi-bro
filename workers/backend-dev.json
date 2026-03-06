@@ -12,7 +12,7 @@
     "entrypoint": "."
   },
   "plans": [
-    { "id": "agent-backend", "role": "backend", "mode": "agent" }
+    { "id": "agent-backend", "mode": "agent" }
   ],
   "params": {
     "scope": "src",

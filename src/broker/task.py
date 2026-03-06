@@ -36,18 +36,15 @@ def substitute_task(task: dict, params: dict) -> dict:
     return _substitute_value(task, params)
 
 
-PLANS_OVERRIDE_FIELDS = {"role"}
+PLANS_OVERRIDE_FIELDS: set[str] = set()  # plan_id only from parent context, no override
 
 
 def apply_params_to_plans(task: dict, params: dict) -> dict:
     """
     Apply params to plans elements by field-level override (not template substitution).
     
-    For fields in PLANS_OVERRIDE_FIELDS (e.g. 'role'), if params contains the field,
+    For fields in PLANS_OVERRIDE_FIELDS, if params contains the field,
     override that field in each plans element.
-    
-    This allows parent task to pass role to child task via --arg role=xxx,
-    and the child task's plans will use the parent's role instead of its own.
     """
     if not isinstance(task, dict) or not isinstance(params, dict):
         return task

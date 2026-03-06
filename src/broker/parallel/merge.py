@@ -1,7 +1,7 @@
 """
 结果合并模块。
 
-按依赖顺序 cherry-pick 各子任务的提交到主分支：
+按依赖顺序 merge 各子任务分支到主分支（3-way merge，便于合并并行修改）：
 - 拓扑排序确定合并顺序
 - 检测冲突并暂停
 - 支持清理 worktree 和分支
@@ -108,9 +108,44 @@ class ResultMerger:
         self.workspace = Path(workspace).resolve()
         self.execution_state = execution_state
         self.dep_graph = dep_graph
-        self.git = GitWorktree(workspace)
+        self.git = GitWorktree(self.workspace)
         self._conflict_callback: Callable[[MergeResult], bool] | None = None
         self._run_external_fn: Callable[[list[str], Path | None], int] | None = None
+        self._main_repo: Path | None = None
+        self._git_dir: str | None = None
+        self._work_tree: str | None = None
+
+    def _ensure_main_repo_context(self) -> None:
+        """
+        解析当前 workspace 的 git-dir、work-tree。
+        使用 workspace 自身上下文（不转主仓库），确保 merge 状态与 index 一致，
+        避免 worktree 场景下 --work-tree 指向主仓库导致 git add 无效。
+        """
+        if self._main_repo is not None:
+            return
+        self._main_repo = self.workspace
+        r = subprocess.run(
+            ["git", "rev-parse", "--absolute-git-dir", "--show-toplevel"],
+            cwd=str(self.workspace),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if r.returncode == 0:
+            lines = r.stdout.strip().splitlines()
+            if len(lines) >= 2:
+                self._git_dir = lines[0].strip()
+                self._work_tree = lines[1].strip()
+            elif len(lines) == 1:
+                self._git_dir = lines[0].strip()
+                self._work_tree = str(self.workspace)
+
+    def _git_base_args(self) -> list[str]:
+        """返回显式指定仓库上下文的 git 前缀，避免污染 worktree。"""
+        self._ensure_main_repo_context()
+        if self._git_dir and self._work_tree:
+            return ["git", f"--git-dir={self._git_dir}", f"--work-tree={self._work_tree}"]
+        return ["git"]
 
     def set_conflict_callback(
         self,
@@ -129,14 +164,22 @@ class ResultMerger:
         args: list[str],
         cwd: Path | None = None,
         check: bool = True,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
-        """执行 git 命令"""
+        """执行 git 命令；始终在主仓库上下文中执行，避免污染子任务 worktree。"""
+        self._ensure_main_repo_context()
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
+        base = self._git_base_args()
+        cwd_val = str(cwd or self._main_repo or self.workspace)
         return subprocess.run(
-            ["git"] + args,
-            cwd=str(cwd or self.workspace),
+            base + args,
+            cwd=cwd_val,
             capture_output=True,
             text=True,
             check=check,
+            env=run_env,
         )
 
     def _get_current_branch(self) -> str:
@@ -157,31 +200,37 @@ class ResultMerger:
         except Exception:
             return []
 
-    def _cherry_pick_commit(self, commit_sha: str) -> tuple[bool, list[str]]:
+    def _merge_branch_git(self, branch: str) -> tuple[bool, list[str], str]:
         """
-        Cherry-pick 单个提交。
+        将分支 merge 到当前 HEAD（3-way merge）。
 
         Returns:
-            (success, conflict_files)
+            (success, conflict_files, error_detail)
         """
-        result = self._run_git(["cherry-pick", commit_sha], check=False)
+        result = self._run_git(["merge", branch, "--no-edit"], check=False)
 
         if result.returncode == 0:
-            return True, []
+            return True, [], ""
 
-        if "CONFLICT" in result.stdout or "conflict" in result.stderr.lower():
+        if "CONFLICT" in result.stdout or "conflict" in (result.stderr or "").lower():
             conflict_files = self._get_conflict_files()
-            return False, conflict_files
+            return False, conflict_files, ""
 
-        return False, []
+        err = (result.stderr or "").strip() or (result.stdout or "").strip()
+        return False, [], err
 
-    def _abort_cherry_pick(self) -> None:
-        """中止 cherry-pick"""
-        self._run_git(["cherry-pick", "--abort"], check=False)
+    def _abort_merge(self) -> None:
+        """中止 merge"""
+        self._run_git(["merge", "--abort"], check=False)
 
-    def _continue_cherry_pick(self) -> bool:
-        """继续 cherry-pick（冲突解决后），使用 --no-edit 避免在非交互环境调用 vi。"""
-        result = self._run_git(["cherry-pick", "--continue", "--no-edit"], check=False)
+    def _continue_merge(self) -> bool:
+        """继续 merge（冲突解决后）。git merge --continue 不接受 --no-edit，需用 GIT_EDITOR=true 禁用编辑器。"""
+        no_editor = {"GIT_EDITOR": "true", "EDITOR": "true", "VISUAL": "true"}
+        result = self._run_git(
+            ["merge", "--continue"],
+            check=False,
+            env=no_editor,
+        )
         return result.returncode == 0
 
     def _get_conflict_files(self) -> list[str]:
@@ -213,6 +262,7 @@ class ResultMerger:
         不捕获输出，让交互式工具（如 vimdiff、Beyond Compare）正常显示。
         在非 TTY 且无 _run_external_fn 时不执行。
         当 _run_external_fn 已设置（如 TUI），由 driver 挂起界面后在真实终端运行，可弹出 Beyond Compare 等 GUI。
+        显式指定 --git-dir 和 --work-tree，确保 mergetool 操作主仓库，不污染子任务 worktree。
 
         Returns:
             True 如果 mergetool 成功退出，False 否则
@@ -221,33 +271,28 @@ class ResultMerger:
         if not is_interactive_tty() and self._run_external_fn is None:
             return False
 
-        args = ["git", "mergetool"]
+        base = self._git_base_args()
+        args = base + ["mergetool"]
+        cwd = str(self._main_repo or self.workspace)
         if self._run_external_fn is not None:
-            exit_code = self._run_external_fn(args, self.workspace)
+            exit_code = self._run_external_fn(args, Path(cwd))
             return exit_code == 0
         else:
-            result = subprocess.run(
-                args,
-                cwd=str(self.workspace),
-                check=False,
-            )
+            result = subprocess.run(args, cwd=cwd, check=False)
             return result.returncode == 0
 
     def _stage_resolved_files(self) -> bool:
         """
-        暂存所有已解决的冲突文件。
-        先对已知冲突文件执行 git add，再 git add -u 兜底。
-
-        Returns:
-            True 如果成功，False 否则
+        暂存 mergetool 解决后的文件（采用用户选择的结果）。
+        使用 git add . 和 git add -u 确保 worktree 内所有变更被正确暂存。
         """
+        # 先 add 冲突文件，再用 add . 兜底（避免路径或 worktree index 导致的漏暂存）
         conflict_files = self._get_conflict_files()
         if conflict_files:
-            result = self._run_git(["add", "--"] + conflict_files, check=False)
-            if result.returncode != 0:
-                return False
-        result = self._run_git(["add", "-u"], check=False)
-        return result.returncode == 0
+            self._run_git(["add", "--"] + conflict_files, check=False)
+        self._run_git(["add", "."], check=False)
+        self._run_git(["add", "-u"], check=False)
+        return True
 
     def _resolve_conflicts_interactive(
         self,
@@ -255,21 +300,21 @@ class ResultMerger:
         message_callback: Callable[[str], None] | None = None,
     ) -> bool:
         """
-        交互式解决冲突：循环启动 mergetool 直到冲突解决或用户放弃。
+        交互式解决冲突：循环启动 mergetool，直到冲突解决。
+        若有冲突则转由人工解决，不设尝试上限（用户可 Ctrl+C 放弃）。
 
         Args:
             result: 包含冲突信息的 MergeResult
             message_callback: 可选的消息回调函数
 
         Returns:
-            True 如果冲突已解决，False 如果用户放弃
+            True 如果冲突已解决，False 如果用户放弃（mergetool 非零退出）
         """
         def msg(text: str) -> None:
             if message_callback:
                 message_callback(text)
 
-        max_attempts = 10
-        for attempt in range(max_attempts):
+        while True:
             conflict_files = self._get_conflict_files()
             if not conflict_files:
                 msg("All conflicts resolved.")
@@ -281,7 +326,10 @@ class ResultMerger:
             msg("")
             msg("Launching merge tool...")
 
-            self._run_mergetool()
+            if not self._run_mergetool():
+                msg("Merge tool exited with error; treat as user abort.")
+                return False
+
             self._stage_resolved_files()
 
             remaining = self._get_conflict_files()
@@ -289,10 +337,7 @@ class ResultMerger:
                 msg("All conflicts resolved.")
                 return True
 
-            msg(f"Still have {len(remaining)} unresolved conflicts.")
-
-        msg(f"Exceeded max attempts ({max_attempts}), aborting.")
-        return False
+            msg("Still have unresolved conflicts; launching merge tool again. Ensure you save all files.")
 
     def _get_head_sha(self) -> str:
         """获取 HEAD 的 SHA"""
@@ -323,13 +368,17 @@ class ResultMerger:
 
         summary = MergeSummary(target_branch=target_branch)
 
-        order = get_topological_order(self.dep_graph)
-
-        self._run_git(["checkout", target_branch])
-
         def msg(text: str) -> None:
             if message_callback:
                 message_callback(text)
+
+        self._ensure_main_repo_context()
+        merge_cwd = self._main_repo or self.workspace
+        msg(f"[merge] workspace={merge_cwd} target_branch={target_branch}")
+
+        order = get_topological_order(self.dep_graph)
+
+        self._run_git(["checkout", target_branch])
 
         for subtask_id in order:
             subtask = self.execution_state.subtasks.get(subtask_id)
@@ -354,7 +403,9 @@ class ResultMerger:
                 ))
                 continue
 
-            result = self._merge_branch(subtask_id, subtask.branch, target_branch)
+            result = self._merge_branch(
+                subtask_id, subtask.branch, target_branch, message_callback=message_callback
+            )
             summary.results.append(result)
 
             if result.status == MergeStatus.CONFLICT:
@@ -366,46 +417,49 @@ class ResultMerger:
                         resolved = self._resolve_conflicts_interactive(result, message_callback)
                         if resolved:
                             self._stage_resolved_files()
-                            if self._continue_cherry_pick():
+                            if self._continue_merge():
                                 result.status = MergeStatus.MERGED
                                 result.commit_sha = self._get_head_sha()
                                 result.conflict_files = []
                                 msg(f"✓ {subtask_id} merged successfully")
                             else:
-                                msg(f"✗ {subtask_id} cherry-pick continue failed")
-                                self._abort_cherry_pick()
+                                msg(f"✗ {subtask_id} merge continue failed")
+                                self._abort_merge()
                                 break
                         else:
                             msg(f"✗ {subtask_id} conflicts not resolved, aborting")
-                            self._abort_cherry_pick()
+                            self._abort_merge()
                             break
                     else:
                         msg(f"⚠ Conflict in {subtask_id} (no interactive terminal, conflict markers preserved):")
                         for f in result.conflict_files:
                             msg(f"  - {f}")
-                        msg("Run 'git mergetool' manually to resolve, then 'git cherry-pick --continue'")
+                        msg("Run 'git mergetool' manually to resolve, then 'git merge --continue'")
                         break
                 elif self._conflict_callback:
                     resolved = self._conflict_callback(result)
                     if resolved:
-                        if self._continue_cherry_pick():
+                        if self._continue_merge():
                             result.status = MergeStatus.MERGED
                             result.commit_sha = self._get_head_sha()
                             result.conflict_files = []
                         else:
-                            self._abort_cherry_pick()
+                            self._abort_merge()
                             break
                     else:
-                        self._abort_cherry_pick()
+                        self._abort_merge()
                         break
                 else:
-                    self._abort_cherry_pick()
+                    self._abort_merge()
                     break
 
             if result.status == MergeStatus.FAILED:
                 break
 
         summary.finished_at = datetime.now()
+
+        for r in summary.results:
+            msg(f"[merge] result {r.subtask_id}: {r.status.value}" + (f" ({r.error_message})" if r.error_message else ""))
 
         if auto_cleanup:
             self.cleanup_worktrees(force=True)
@@ -417,9 +471,16 @@ class ResultMerger:
         subtask_id: str,
         branch: str,
         target_branch: str,
+        message_callback: Callable[[str], None] | None = None,
     ) -> MergeResult:
-        """合并单个分支"""
+        """merge 单个分支到 target_branch（3-way merge，合并并行修改）"""
         commits = self._get_branch_commits(branch, target_branch)
+
+        def _msg(text: str) -> None:
+            if message_callback:
+                message_callback(text)
+
+        _msg(f"[merge] {subtask_id} branch={branch} commits={len(commits)} (base={target_branch})")
 
         if not commits:
             return MergeResult(
@@ -429,24 +490,25 @@ class ResultMerger:
                 error_message="No new commits",
             )
 
-        for commit in commits:
-            success, conflict_files = self._cherry_pick_commit(commit)
+        success, conflict_files, err_detail = self._merge_branch_git(branch)
 
-            if not success:
-                if conflict_files:
-                    return MergeResult(
-                        subtask_id=subtask_id,
-                        branch=branch,
-                        status=MergeStatus.CONFLICT,
-                        conflict_files=conflict_files,
-                    )
-                else:
-                    return MergeResult(
-                        subtask_id=subtask_id,
-                        branch=branch,
-                        status=MergeStatus.FAILED,
-                        error_message="Cherry-pick failed",
-                    )
+        if not success:
+            if conflict_files:
+                return MergeResult(
+                    subtask_id=subtask_id,
+                    branch=branch,
+                    status=MergeStatus.CONFLICT,
+                    conflict_files=conflict_files,
+                )
+            err_msg = "Merge failed"
+            if err_detail:
+                err_msg += f": {err_detail[:200]}"
+            return MergeResult(
+                subtask_id=subtask_id,
+                branch=branch,
+                status=MergeStatus.FAILED,
+                error_message=err_msg,
+            )
 
         return MergeResult(
             subtask_id=subtask_id,
@@ -543,7 +605,9 @@ def format_merge_summary(summary: MergeSummary) -> str:
             lines.append(f"  - {r.subtask_id}: {r.error_message}")
         lines.append("")
 
-    total = len(summary.results)
-    lines.append(f"总计: {len(merged)}/{total} 成功合并")
+    # 分母为“实际参与合并”的任务数（排除 SKIPPED），与用户预期一致
+    attempted = [r for r in summary.results if r.status != MergeStatus.SKIPPED]
+    total_attempted = len(attempted)
+    lines.append(f"总计: {len(merged)}/{total_attempted} 成功合并")
 
     return "\n".join(lines)

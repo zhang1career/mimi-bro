@@ -104,8 +104,8 @@ def emit_aggregation(
 ) -> None:
     """Emit results aggregation via display driver: on_result per agent."""
     for agent in agents:
-        role = agent.get("role", "?")
-        work_dir = build_work_dir(workspace, run_id, role)
+        plan_id = agent.get("id", "?")
+        work_dir = build_work_dir(workspace, run_id, plan_id)
         result_file = work_dir / "result.json"
         status = "no result.json"
         exit_code: int | None = None
@@ -116,7 +116,7 @@ def emit_aggregation(
                 exit_code = data.get("code")
             except (json.JSONDecodeError, OSError, TypeError):
                 status = "read error"
-        display_driver.on_result(worker_id, role, status, work_dir, exit_code=exit_code)
+        display_driver.on_result(worker_id, plan_id, status, work_dir, exit_code=exit_code)
 
 
 def read_previous_round_summary(workspace: Path, work_dir: Path | None) -> str:
@@ -238,6 +238,6 @@ def emit_subtask_log_path(
     line = json.dumps({
         "path": str(work_dir / "agent.log"),
         "worker_id": worker_id,
-        "role": agent["role"],
+        "plan_id": agent["id"],
     })
     locked_append(running_file(parent_worker_id), line)

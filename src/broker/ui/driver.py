@@ -42,7 +42,7 @@ class DisplayDriver:
         paths: list[dict[str, Any]],
         lines_per_file: int = 3,
     ) -> None:
-        """Log paths available. paths = [{path, worker_id?, role?}, ...]"""
+        """Log paths available. paths = [{path, worker_id?, plan_id?}, ...]"""
         pass
 
     def on_task_assigned(
@@ -58,7 +58,7 @@ class DisplayDriver:
     def on_result(
         self,
         worker_id: str,
-        role: str,
+        plan_id: str,
         status: str,
         work_dir: Path | str,
         exit_code: int | None = None,
@@ -190,12 +190,12 @@ class JsonlDriver(DisplayDriver):
     def on_result(
         self,
         worker_id: str,
-        role: str,
+        plan_id: str,
         status: str,
         work_dir: Path | str,
         exit_code: int | None = None,
     ) -> None:
-        evt = events.emit_result(worker_id, role, status, work_dir, exit_code)
+        evt = events.emit_result(worker_id, plan_id, status, work_dir, exit_code)
         print(events.to_jsonl(evt), end="", flush=True)
 
     def verbose(self, message: str) -> None:
@@ -216,7 +216,7 @@ class JsonlDriver(DisplayDriver):
         evt = events.emit_container_status(
             container_name=container.container_name,
             run_id=container.run_id,
-            role=container.role,
+            plan_id=container.plan_id,
             status=container.status.value,
             exit_code=container.exit_code,
             error_message=container.error_message,
@@ -253,13 +253,13 @@ class PlainDriver(DisplayDriver):
     def on_result(
         self,
         worker_id: str,
-        role: str,
+        plan_id: str,
         status: str,
         work_dir: Path | str,
         exit_code: int | None = None,
     ) -> None:
         code = f" (exit_code={exit_code})" if exit_code is not None else ""
-        print(f"[{worker_id}] {role}: {status}{code}", flush=True)
+        print(f"[{worker_id}] {plan_id}: {status}{code}", flush=True)
 
     def on_progress(
         self,
@@ -378,12 +378,12 @@ class CLIDriver(DisplayDriver):
     def on_result(
         self,
         worker_id: str,
-        role: str,
+        plan_id: str,
         status: str,
         work_dir: Path | str,
         exit_code: int | None = None,
     ) -> None:
-        self._queue.put(events.emit_result(worker_id, role, status, work_dir, exit_code))
+        self._queue.put(events.emit_result(worker_id, plan_id, status, work_dir, exit_code))
 
     def verbose(self, message: str) -> None:
         if self._verbose:
@@ -400,7 +400,7 @@ class CLIDriver(DisplayDriver):
         evt = events.emit_container_status(
             container_name=container.container_name,
             run_id=container.run_id,
-            role=container.role,
+            plan_id=container.plan_id,
             status=container.status.value,
             exit_code=container.exit_code,
             error_message=container.error_message,

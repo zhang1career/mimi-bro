@@ -13,6 +13,9 @@
     ],
     "entrypoint": "."
   },
+  "skill_refs": [
+    "test-worker"
+  ],
   "plans": [
     {
       "id": "setup-fixture",

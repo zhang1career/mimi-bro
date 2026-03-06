@@ -35,7 +35,7 @@ def main():
     # ---- 读取环境变量 ----
     # WORKSPACE = 工作路径（task.json, agent.log, works/）；SOURCE = 源代码路径（供 cursor --workspace 使用）
     agent_id = os.getenv('AGENT_ID', 'unknown')
-    role = os.getenv('AGENT_ROLE', 'generic')
+    plan_id = os.getenv('AGENT_PLAN_ID', os.getenv('AGENT_ROLE', 'generic'))
     task_id = os.getenv('TASK_ID', 'unknown')
     workspace = Path(os.getenv('WORKSPACE', '/workspace'))
     source = Path(os.getenv('SOURCE', str(workspace)))
@@ -49,7 +49,7 @@ def main():
     else:
         log('[agent] warning: CURSOR_API_KEY not set, cursor-agent may require authentication')
     
-    log(f'[agent] id={agent_id} role={role} task_id={task_id}')
+    log(f'[agent] id={agent_id} plan_id={plan_id} task_id={task_id}')
     log(f'[agent] workspace (work)={workspace} source={source}')
 
     agents_dir = workspace / 'agents'
@@ -70,7 +70,7 @@ def main():
     if missing_deps:
         fatal(f'cursor cli dependencies missing: {", ".join(missing_deps)}', code=RET_INVALID_PARAM)
 
-    # --- 准备工作目录（Broker 可传 WORK_DIR_REL 如 works/{{task_id}}-{{run_id}}-{{role}}） ----
+    # --- 准备工作目录（Broker 可传 WORK_DIR_REL 如 works/{run_id}/{plan_id}） ----
     work_dir_rel = os.getenv('WORK_DIR_REL', '').strip()
     if work_dir_rel:
         work_dir = workspace / work_dir_rel
@@ -216,7 +216,7 @@ def main():
     # generated: DESIGN §4.5 — agent 产物必须标记 generated
     result = {
         'agent_id': agent_id,
-        'role': role,
+        'plan_id': plan_id,
         'status': 'success' if proc.returncode == 0 else 'failed',
         'code': proc.returncode,
         'token_usage': None,

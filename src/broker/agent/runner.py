@@ -198,7 +198,7 @@ def _ensure_subtask_ids(items: list[dict]) -> list[dict]:
             if exec_type == PlanItemType.SKILL:
                 base_id = item_copy.get("skill") or item_copy.get("skill_id") or "subtask"
             else:  # INLINE
-                base_id = item_copy.get("role") or "inline"
+                base_id = item_copy.get("id") or "inline"
             item_copy["id"] = _generate_subtask_id(base_id, i)
         result.append(item_copy)
     return result
@@ -264,10 +264,10 @@ def _build_subtask_command(
         objective = item.get("objective") or item.get("requirement") or default_objective or ""
         if not objective:
             return None
-        role = item.get("role", "worker")
+        plan_id = item.get("id", "worker")
         ws = workspace_path or src_path
-        task_id = worker_id or item.get("id", role)
-        cmd = f'bro run {role} --workspace "{ws}" --source "{src_path}" --objective "{objective}" --task-id "{task_id}"'
+        task_id = worker_id or plan_id
+        cmd = f'bro run {plan_id} --workspace "{ws}" --source "{src_path}" --objective "{objective}" --task-id "{task_id}"'
         if run_id:
             cmd += f' --run-id "{run_id}"'
         if parent_run_id:
@@ -528,14 +528,13 @@ def _execute_parallel_items(
 
     log_paths = []
     for item in items:
-        subtask_id = item.get("id", "unknown")
-        role = item.get("role") or subtask_id
-        wd = build_work_dir(workspace, run_id, role)
+        plan_id = item.get("id", "unknown")
+        wd = build_work_dir(workspace, run_id, plan_id)
         log_path = wd / "agent.log"
         log_paths.append({
             "path": str(log_path),
             "worker_id": worker_id,
-            "role": role,
+            "plan_id": plan_id,
         })
     drv.on_log_paths(log_paths)
     drv.on_progress(0, total_items)
@@ -565,7 +564,6 @@ def _execute_parallel_items(
             "objective": subtask.objective,
             "mode": subtask.mode,
             "scope": subtask.scope,
-            "role": subtask.role,
         }
         effective_run_id = child_run_id if child_run_id else run_id
         effective_parent_run_id = parent_run_id if child_run_id else None
@@ -631,20 +629,20 @@ def _execute_parallel_items(
             # Docker parallel: host creates cursor-agent / runs skill directly (no bro-subtask)
             if (_item.get("objective") or _item.get("requirement")) and not _item.get("skill"):
                 # INLINE: run cursor-agent directly from host
-                _role = subtask.role or subtask.id
+                _plan_id = subtask.id
                 subtask_run_id = effective_run_id or gen_run_id()
-                work_dir = get_work_dir(workspace, run_id=subtask_run_id, role=_role)
-                write_run_meta(work_dir, subtask_run_id, worker_id, _role, effective_parent_run_id)
-                agent = {"id": _role, "role": _role, "mode": "plan", **_item}
+                work_dir = get_work_dir(workspace, run_id=subtask_run_id, plan_id=_plan_id)
+                write_run_meta(work_dir, subtask_run_id, worker_id, _plan_id, effective_parent_run_id)
+                agent = {"id": _plan_id, "mode": "plan", **_item}
                 payload = build_task_payload(task, agent)
                 write_task_json(workspace, payload, work_dir)
                 drv.on_console_message(f"[container] Starting cursor-agent for {subtask.id}...")
                 try:
                     run_container(
-                        _role, _role,
+                        _plan_id, _plan_id,
                         task_id=subtask_run_id,
                         workspace=workspace,
-                        work_dir_rel=task_path_rel(subtask_run_id, _role),
+                        work_dir_rel=task_path_rel(subtask_run_id, _plan_id),
                         source=worktree_path,
                     )
                     return 0
@@ -702,6 +700,52 @@ def _execute_parallel_items(
                 drv.on_console_message(f"[ERROR] Subtask {subtask.id} exception: {error_summary_for_console(e)}")
                 return 1
 
+    # 捕获原始分支 a，创建执行分支 b：在 b 上提交全部改动，worktree merge 目标为 b，最后将 b 合并回 a
+    _br = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(scheduler_workspace),
+        capture_output=True,
+        text=True,
+    )
+    initial_branch = _br.stdout.strip() if _br.returncode == 0 else "main"
+    merge_branch = f"bro-merge-{run_id[:12]}"
+    merge_branch_created = False
+
+    if GitWorktree.is_git_repo(scheduler_workspace):
+        # 创建分支 b，提交全部改动（不论是否有脏文件），确保 merge 时工作区干净
+        try:
+            subprocess.run(
+                ["git", "checkout", "-b", merge_branch],
+                cwd=str(scheduler_workspace),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            merge_branch_created = True
+            if verbose:
+                drv.verbose(f"[broker] Created merge branch: {merge_branch}")
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=str(scheduler_workspace),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit_r = subprocess.run(
+                ["git", "commit", "-m", "bro: pre-execution snapshot"],
+                cwd=str(scheduler_workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if commit_r.returncode == 0 and verbose:
+                drv.verbose(f"[broker] Committed pre-execution state to {merge_branch}")
+        except subprocess.CalledProcessError as e:
+            if verbose:
+                drv.verbose(f"[broker] Pre-execution branch setup failed: {e}")
+            merge_branch_created = False
+            merge_branch = initial_branch
+
     if verbose:
         drv.verbose(f"[broker] Starting parallel execution with {max_workers} workers...")
 
@@ -726,6 +770,7 @@ def _execute_parallel_items(
             drv.on_console_message(msg)
 
         merge_summary = merger.merge(
+            target_branch=merge_branch,
             interactive=interactive_merge,
             message_callback=message_callback,
         )
@@ -733,6 +778,46 @@ def _execute_parallel_items(
         merged_count = sum(1 for r in merge_summary.results if r.status.value == "merged")
         if verbose:
             drv.verbose(f"[broker] Merged {merged_count} subtasks")
+
+        # 将 merge_branch 合并回原始分支 a（分支 b 由本程序创建，应由本程序负责 merge 回 a）
+        if merge_branch_created and merge_summary.all_merged_successfully:
+            try:
+                subprocess.run(
+                    ["git", "checkout", initial_branch],
+                    cwd=str(scheduler_workspace),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                merge_back = subprocess.run(
+                    ["git", "merge", merge_branch, "--no-edit"],
+                    cwd=str(scheduler_workspace),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if merge_back.returncode == 0:
+                    if verbose:
+                        drv.verbose(f"[broker] Merged {merge_branch} back to {initial_branch}")
+                    subprocess.run(
+                        ["git", "branch", "-d", merge_branch],
+                        cwd=str(scheduler_workspace),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                else:
+                    drv.on_console_message(
+                        f"⚠ Merge back to {initial_branch} failed. "
+                        f"Resolve conflicts if any, then: git checkout {initial_branch} && git merge {merge_branch}"
+                    )
+            except subprocess.CalledProcessError as e:
+                drv.on_console_message(f"⚠ Checkout {initial_branch} failed: {e}")
+        elif merge_branch_created and not merge_summary.all_merged_successfully:
+            drv.on_console_message(
+                f"Merge had conflicts. Resolve them (git mergetool, git add, git merge --continue), "
+                f"then: git checkout {initial_branch} && git merge {merge_branch}"
+            )
 
         val_workspace = get_env_value(workspace, "BROKER_AUTO_CLEANUP_WORKTREE")
         val_project_root = get_env_value(project_root, "BROKER_AUTO_CLEANUP_WORKTREE")
@@ -754,6 +839,17 @@ def _execute_parallel_items(
     else:
         if verbose:
             drv.verbose(f"[broker] {summary['failed']} subtasks failed, {summary['skipped']} skipped")
+        if merge_branch_created:
+            try:
+                subprocess.run(
+                    ["git", "checkout", initial_branch],
+                    cwd=str(scheduler_workspace),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            except subprocess.CalledProcessError:
+                pass
         return 1
 
 
@@ -1065,8 +1161,8 @@ def validate_agents_and_task(agents: list, task: dict) -> None:
     for i, a in enumerate(agents):
         if not isinstance(a, dict):
             raise ValueError(f"agents[{i}] must be a dict")
-        if "id" not in a or "role" not in a:
-            raise ValueError(f"agents[{i}] must have 'id' and 'role'")
+        if "id" not in a:
+            raise ValueError(f"agents[{i}] must have 'id'")
     if not isinstance(task, dict):
         raise ValueError("task must be a dict")
 
@@ -1088,7 +1184,7 @@ def run_agents(
         docker_workspace: str = "/workspace",
 ):
     """
-    Run agents with task payload. Writes task.json under works/{run_id}/{role}/.
+    Run agents with task payload. Writes task.json under works/{run_id}/{plan_id}/.
     - workspace: work path (task.json, agent.log, works/).
     - source: source path (source code, scripts) for agent to operate on; default = workspace.
     - If task has "steps", runs multi-round: first agent runs once per step.
@@ -1299,7 +1395,7 @@ def _execute_breakdown(
 
 
 def _load_first_agent_breakdown(run_id, run_list, workspace):
-    first_work_dir = build_work_dir(workspace, run_id, run_list[0]["role"])
+    first_work_dir = build_work_dir(workspace, run_id, run_list[0]["id"])
     breakdown_items = _read_breakdown_from_dir(first_work_dir)
     return breakdown_items, first_work_dir
 
@@ -1320,7 +1416,7 @@ def _read_breakdown_from_dir(work_dir: Path) -> list[dict]:
 def _auto_audit(drv, run_id, run_list, task, worker_id, verbose, workspace):
     task_expected = get_task_block(task).get("expected_results")
     for agent in run_list:
-        work_dir = build_work_dir(workspace, run_id, agent["role"])
+        work_dir = build_work_dir(workspace, run_id, agent["id"])
         last_result = None
         result_file = work_dir / "result.json"
         if result_file.exists():
@@ -1360,7 +1456,7 @@ def run_agents_local(
 ) -> None:
     """
     Run agents by invoking local cursor-cli (no Docker). For bootstrap when no agent image exists.
-    Same task layout as run_agents: writes task.json under works/{run_id}/{role}/.
+    Same task layout as run_agents: writes task.json under works/{run_id}/{plan_id}/.
     Steps may have validate_with (broker runs sub-task directly, no agent shell - avoids timeout).
     source: path for agent to operate on; default = workspace. batches = parallel-ready level order.
     auto: skip confirmation between steps (human-in-loop pause).

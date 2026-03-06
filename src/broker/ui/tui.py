@@ -192,8 +192,8 @@ class DependencyConfirmDialog(DialogBase, can_focus=True):
             )
             yield Static("Press Enter/A to confirm, Esc/N to cancel", id="hint")
             with Horizontal(id="button-row"):
-                yield Button("Confirm (A)", id="btn-confirm", variant="success", classes="dialog-button")
-                yield Button("Cancel (N)", id="btn-cancel", variant="error", classes="dialog-button")
+                yield Button("Accept (A)", id="btn-confirm", variant="success", classes="dialog-button")
+                yield Button("Deny (N)", id="btn-cancel", variant="error", classes="dialog-button")
 
     def on_mount(self) -> None:
         """Apply theme colors after mount."""
@@ -665,12 +665,12 @@ class SubmitTUI(App):
         self._selected_log_path: Path | None = None
         self._log_viewer_content: str = ""
         self._console_lines: list[str] = []
-        self._log_paths_by_worker: dict[str, list[tuple[str, str]]] = {}  # worker_id -> [(role, path), ...]
+        self._log_paths_by_worker: dict[str, list[tuple[str, str]]] = {}  # worker_id -> [(plan_id, path), ...]
         self._selected_node_label: str = ""
         self._selected_node_id: str | None = None
         self._parent_tasks_progress: list[dict] = []
         self._progress_carousel_index: int = 0
-        self._completed_per_worker: dict[str, set[str]] = {}  # worker_id -> set of completed role
+        self._completed_per_worker: dict[str, set[str]] = {}  # worker_id -> set of completed plan_id
         self._progress_carousel_timer: float = 0.0
         self._processed_result_hashes: set[int] = set()
         self._notification_queue: list[str] = []
@@ -1078,12 +1078,12 @@ class SubmitTUI(App):
             self._append_console(f"Assigned: {wid} -> {who} | {preview}")
         elif t == "result":
             wid = evt.get("worker_id") or evt.get("task_id") or "?"
-            role = evt.get("role", "?")
-            if wid and role and role != "?":
-                self._completed_per_worker.setdefault(wid, set()).add(role)
+            plan_id = evt.get("plan_id", evt.get("role", "?"))
+            if wid and plan_id and plan_id != "?":
+                self._completed_per_worker.setdefault(wid, set()).add(plan_id)
             status = evt.get("status", "?")
             code = evt.get("exit_code")
-            line = f"Result: {wid} ({role}): {status}"
+            line = f"Result: {wid} ({plan_id}): {status}"
             if code is not None:
                 line += f" (exit {code})"
             self._append_console(line)
@@ -1147,7 +1147,7 @@ class SubmitTUI(App):
         self._apply_tree_colors()
 
     def _add_log_paths_to_tree(self, paths: list[dict]) -> None:
-        """Add log path nodes. Paths = [{path, worker_id, role?, parent_id?}]."""
+        """Add log path nodes. Paths = [{path, worker_id, plan_id?, parent_id?}]."""
         if not isinstance(paths, list):
             return
         tree = self.query_one("#task-tree", Tree)
@@ -1157,10 +1157,10 @@ class SubmitTUI(App):
                 continue
             path = p.get("path")
             worker_id = str(p.get("worker_id") or p.get("task_id") or "?")
-            role = str(p.get("role", "?"))
+            plan_id = str(p.get("plan_id", p.get("role", "?")))
             parent_id = p.get("parent_id")
             # node_id = directory name = real task ID (e.g. "test-parallel-deps-17722110687154797-first")
-            node_label = Path(path).parent.name if path else f"{worker_id}-{role}"
+            node_label = Path(path).parent.name if path else f"{worker_id}-{plan_id}"
             node_id = node_label
             if not path or node_id in self._node_by_id:
                 continue
@@ -1179,7 +1179,7 @@ class SubmitTUI(App):
             self._running_ids.add(node_id)
             self._get_node_color(node_id)
 
-            self._log_paths_by_worker.setdefault(worker_id, []).append((role, path))
+            self._log_paths_by_worker.setdefault(worker_id, []).append((plan_id, path))
             added_any = True
 
             if self._selected_log_path is None and path:
@@ -1197,7 +1197,7 @@ class SubmitTUI(App):
         """Handle container status update event."""
         container_name = evt.get("container_name", "")
         run_id = evt.get("run_id", "")
-        role = evt.get("role", "")
+        plan_id = evt.get("plan_id", evt.get("role", ""))
         status = evt.get("status", "")
         exit_code = evt.get("exit_code")
         error_message = evt.get("error_message", "")
@@ -1208,7 +1208,7 @@ class SubmitTUI(App):
         self._containers[container_name] = {
             "container_name": container_name,
             "run_id": run_id,
-            "role": role,
+            "plan_id": plan_id,
             "status": status,
             "exit_code": exit_code,
             "error_message": error_message,
@@ -1264,7 +1264,7 @@ class SubmitTUI(App):
             self._containers[name] = {
                 "container_name": name,
                 "run_id": prev.get("run_id", ""),
-                "role": prev.get("role", name.replace("bro-subtask-", "").replace("agent-", "")),
+                "plan_id": prev.get("plan_id", prev.get("role", name.replace("bro-subtask-", "").replace("agent-", ""))),
                 "status": status,
                 "exit_code": item.get("exit_code"),
                 "error_message": prev.get("error_message", ""),
@@ -1285,7 +1285,7 @@ class SubmitTUI(App):
 
         for name, data in self._containers.items():
             status = data.get("status", "")
-            role = data.get("role", "")
+            plan_id = data.get("plan_id", data.get("role", ""))
             exit_code = data.get("exit_code")
 
             if status == "running":
@@ -1338,14 +1338,14 @@ class SubmitTUI(App):
                 tree_node.label = new_label
 
     def _update_parent_tasks_progress(self) -> None:
-        """Update parent tasks progress list from _log_paths_by_worker. One entry per (worker, role) for carousel."""
+        """Update parent tasks progress list from _log_paths_by_worker. One entry per (worker, plan_id) for carousel."""
         parent_tasks = []
-        for worker_id, roles_paths in self._log_paths_by_worker.items():
-            if not roles_paths:
+        for worker_id, plan_paths in self._log_paths_by_worker.items():
+            if not plan_paths:
                 continue
-            total = len(roles_paths)
-            for role, path in roles_paths:
-                node_id = Path(path).parent.name if path else f"{worker_id}-{role}"
+            total = len(plan_paths)
+            for plan_id, path in plan_paths:
+                node_id = Path(path).parent.name if path else f"{worker_id}-{plan_id}"
                 color_idx = self._get_node_color(node_id)
                 parent_tasks.append(
                     {
@@ -1524,9 +1524,37 @@ class SubmitTUI(App):
                     bar.add_class(f"task-color-{color_idx % 6}")
 
     def _refresh_log_viewer(self) -> None:
-        """Periodically re-read selected log file and update viewer."""
+        """Periodically re-read selected log file or container logs and update viewer."""
         if self._shutting_down:
             return
+
+        if self._selected_container_name:
+            # Container mode: fetch container logs from Docker
+            container_name = self._selected_container_name
+            logs = ""
+            work_dir = (self._containers.get(container_name) or {}).get("work_dir", "")
+            try:
+                from broker.container.manager import ContainerManager
+                manager = ContainerManager(workspace=Path("/tmp"))
+                logs = manager.get_container_logs(container_name, tail=500)
+            except Exception:
+                pass
+            if not logs and work_dir:
+                try:
+                    fallback_path = Path(work_dir) / "container.log"
+                    if fallback_path.exists():
+                        logs = fallback_path.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+            content = logs if logs else "(no container logs)"
+            self._log_viewer_content = content
+            try:
+                viewer = self.query_one("#log-viewer", LogViewer)
+                viewer.update(content)
+            except Exception:
+                pass
+            return
+
         if self._selected_log_path is not None:
             path = self._selected_log_path
             if path.exists():
@@ -1539,14 +1567,14 @@ class SubmitTUI(App):
                 except OSError:
                     pass
 
-        for worker_id, roles_paths in self._log_paths_by_worker.items():
-            for role, log_path in roles_paths:
+        for worker_id, plan_paths in self._log_paths_by_worker.items():
+            for plan_id, log_path in plan_paths:
                 p = Path(log_path)
                 if not p.exists():
                     continue
                 try:
                     lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-                    task_label = p.parent.name if p.parent else f"{worker_id}-{role}"
+                    task_label = p.parent.name if p.parent else f"{worker_id}-{plan_id}"
                     self._parse_task_results(lines, task_label)
                 except OSError:
                     continue
@@ -1652,15 +1680,15 @@ class SubmitTUI(App):
             self._selected_node_id = None
             return
 
-        # Check if this is from the container tree
+        # Check if this is from the container tree (event.control is the Tree that sent the message)
         try:
-            container_tree = self.query_one("#container-tree", Tree)
-            if event.tree == container_tree:
+            if getattr(event.control, "id", None) == "container-tree":
                 self._handle_container_node_selected(node)
                 return
         except Exception:
             pass
 
+        self._selected_container_name = None  # Switch out of container log mode
         label = getattr(node, "label", "") or ""
         self._selected_node_label = _plain_label(label)
         self._update_log_title(self._selected_node_label)
@@ -1696,6 +1724,7 @@ class SubmitTUI(App):
             return
 
         self._selected_container_name = container_name
+        self._selected_log_path = None  # Switch out of task log mode
         label = _plain_label(getattr(node, "label", "") or container_name)
         self._update_log_title(f"Container: {label}")
 

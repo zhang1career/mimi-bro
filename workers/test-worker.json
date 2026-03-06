@@ -11,7 +11,7 @@
     "entrypoint": "."
   },
   "plans": [
-    { "id": "agent-test", "role": "tester", "mode": "agent" }
+    { "id": "agent-test", "mode": "agent" }
   ],
   "params": {
     "requirement": "Describe the test task"

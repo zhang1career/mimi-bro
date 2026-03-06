@@ -50,16 +50,14 @@ def _get_docker_client():
 def _load_dotenv_from_project_root() -> None:
     """Load .env from project root so CURSOR_API_KEY etc. are available when not set in shell."""
     from broker.utils.env_util import load_dotenv_from_dir
-    load_dotenv_from_dir(PROJECT_ROOT)
-    # When inside bro-subtask: PROJECT_ROOT=/workspace; load docker/.env from /source (worktree has repo)
-    docker_env = Path("/source/docker/.env") if Path("/source").exists() else PROJECT_ROOT / "docker" / ".env"
-    if docker_env.exists():
-        load_dotenv_from_dir(docker_env.parent)
+    # In container PROJECT_ROOT=/workspace; repo root .env is at /source/.env
+    root = Path("/source") if Path("/source").exists() else PROJECT_ROOT
+    load_dotenv_from_dir(root)
 
 
 def run_container(
     agent_id: str,
-    role: str,
+    plan_id: str,
     task_id="demo",
     workspace=PROJECT_ROOT,
     work_dir_rel: str | None = None,
@@ -74,7 +72,7 @@ def run_container(
     workspace = workspace.resolve() if hasattr(workspace, "resolve") else Path(workspace).resolve()
     src = src.resolve() if hasattr(src, "resolve") else Path(src).resolve()
 
-    print(f"[docker] starting agent {agent_id} ({role})", flush=True)
+    print(f"[docker] starting agent {agent_id} ({plan_id})", flush=True)
 
     container_name = f"agent-{agent_id}"
 
@@ -89,7 +87,7 @@ def run_container(
         # Prepare environment variables: WORKSPACE = work root, SOURCE = source root for cursor --workspace
         env_vars = {
             "AGENT_ID": agent_id,
-            "AGENT_ROLE": role,
+            "AGENT_PLAN_ID": plan_id,
             "TASK_ID": task_id,
             "WORKSPACE": "/workspace",
             "SOURCE": "/source" if src != workspace else "/workspace",

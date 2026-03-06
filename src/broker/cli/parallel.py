@@ -106,7 +106,7 @@ def merge(
             help="Use interactive merge with GUI mergetool on conflicts",
         ),
 ):
-    """Merge results from parallel execution (cherry-pick in topological order)."""
+    """Merge results from parallel execution (merge in topological order)."""
     run_id, state, ws = _resolve_run_and_load_state(run_id, source)
 
     run_state_dir = _get_state_dir(ws, run_id)

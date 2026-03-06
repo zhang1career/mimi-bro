@@ -219,7 +219,7 @@ def run_local(
     # generated: DESIGN §4.5 — agent 产物必须标记 generated
     result = {
         "agent_id": "local",
-        "role": "local",
+        "plan_id": "local",
         "status": "success" if code == 0 else "failed",
         "code": code,
         "token_usage": None,

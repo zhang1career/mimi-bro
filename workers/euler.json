@@ -4,7 +4,7 @@
     "objective": "Create one or more new general task(s) in tasks/ according to: {{prompt}}. Report what was created.",
     "instructions": [
       "Read tasks/test-greetings.json as format reference.",
-      "Each new task must have: task (id, objective, instructions, entrypoint), plans (array of {id, role, mode}), optional params, optional steps, optional skill_refs (array of skill IDs (from knowledge API); include when the task output references implementation skills, e.g. analysis/breakdown tasks).",
+      "Each new task must have: task (id, objective, instructions, entrypoint), plans (array of {id, mode}), optional params, optional steps, optional skill_refs (array of skill IDs (from knowledge API); include when the task output references implementation skills, e.g. analysis/breakdown tasks).",
       "If the new task invokes sub-tasks (via skill_refs or breakdown), ensure its instructions specify that {{scope}} is passed to each sub-task by default.",
       "Output JSON files to tasks/ with descriptive names (e.g. tasks/my-feature.json).",
       "Do not modify existing tasks (workers/*.json) or src/.",
@@ -15,7 +15,6 @@
   "plans": [
     {
       "id": "agent-task-factory",
-      "role": "backend",
       "mode": "agent"
     }
   ],

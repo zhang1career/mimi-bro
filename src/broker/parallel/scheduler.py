@@ -48,7 +48,6 @@ class SubtaskState:
     objective: str = ""
     mode: str = "agent"
     scope: str = ""
-    role: str = ""
     status: TaskStatus = TaskStatus.PENDING
     worktree_info: WorktreeInfo | None = None
     branch: str = ""
@@ -84,7 +83,6 @@ class ParallelExecutionState:
                     "objective": v.objective,
                     "mode": v.mode,
                     "scope": v.scope,
-                    "role": v.role,
                     "status": v.status.value,
                     "branch": v.branch,
                     "worktree_path": v.worktree_info.worktree_path if v.worktree_info else None,
@@ -126,7 +124,6 @@ class ParallelExecutionState:
                 objective=v.get("objective", ""),
                 mode=v.get("mode", "agent"),
                 scope=v.get("scope", ""),
-                role=v.get("role", ""),
                 status=TaskStatus(v["status"]),
                 branch=v.get("branch", ""),
                 exit_code=v.get("exit_code"),
@@ -190,7 +187,6 @@ class ParallelScheduler:
                 objective=item.get("objective", ""),
                 mode=item.get("mode", "agent"),
                 scope=item.get("scope", ""),
-                role=item.get("role", ""),
                 depends_on=deps,
             )
 
@@ -258,8 +254,8 @@ class ParallelScheduler:
     def _setup_worktree(self, subtask: SubtaskState) -> WorktreeInfo:
         """为子任务创建 worktree"""
         git = GitWorktree(self.workspace)
-        role = subtask.role or 'worker'
-        branch = task_slug(self.run_id, role)
+        plan_id = subtask.id or 'worker'
+        branch = task_slug(self.run_id, plan_id)
         worktree_path = git.compute_worktree_path(branch, session_id=self.run_id[:8])
 
         existing = git.find_worktree_by_branch(branch)
@@ -302,9 +298,11 @@ class ParallelScheduler:
                 commit_result = auto_commit_changes(
                     worktree_path=worktree_path,
                     run_id=self.run_id,
-                    role=subtask.role or subtask.id,
+                    plan_id=subtask.id,
                     objective=subtask.objective,
                     requirement=subtask.requirement,
+                    main_repo_path=self.workspace,
+                    branch=worktree_info.branch,
                 )
                 if not commit_result.success and not commit_result.skipped:
                     exit_code = 1

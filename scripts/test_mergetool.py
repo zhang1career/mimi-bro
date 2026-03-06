@@ -5,16 +5,17 @@
 在 --source 指定的 git 仓库中：
 1. 创建 test.json 并初始提交
 2. 复用 GitWorktree 创建 worktree，分支 a 和 b 分别在各自 worktree 中修改 test.json（制造合并冲突）
-3. 复用 auto_commit_changes 提交各 worktree 变更
-4. 通过 ResultMerger 按拓扑顺序 cherry-pick 合并
+3. 复用 auto_commit_changes（含 main_repo_path + branch）提交各 worktree 变更
+4. 通过 ResultMerger 按拓扑顺序 merge 合并到原始分支
 5. 发现冲突后弹出 git mergetool 窗口
 
-复用 bro submit 的 GitWorktree、auto_commit_changes、TUI、CLIDriver、ResultMerger 等代码。
+覆盖：main_repo_path/branch、HEAD 切换、merge（非 cherry-pick）、原始分支作为目标。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ if str(PROJECT_ROOT / "src") not in sys.path:
 
 from broker.parallel.analyzer import DependencyEdge, DependencyGraph
 from broker.parallel.merge import ResultMerger, format_merge_summary
+from broker.utils.env_util import get_env_value
 from broker.parallel.scheduler import ParallelExecutionState, TaskStatus
 from broker.parallel.worktree import GitWorktree, WorktreeInfo, auto_commit_changes
 from broker.ui.driver import CLIDriver
@@ -44,6 +46,7 @@ def setup_initial_commit(repo: Path) -> None:
 def setup_with_worktrees(repo: Path, run_id: str) -> tuple[WorktreeInfo, WorktreeInfo]:
     """
     复用 GitWorktree 创建 worktree，在各 worktree 中修改 test.json 并提交。
+    使用 main_repo_path + branch 覆盖 broker 的提交逻辑（含 HEAD 切换）。
     返回 (WorktreeInfo_a, WorktreeInfo_b)。
     """
     git = GitWorktree(repo)
@@ -55,7 +58,14 @@ def setup_with_worktrees(repo: Path, run_id: str) -> tuple[WorktreeInfo, Worktre
     info_a = git.create_worktree("a", worktree_path_a, create_branch=True)
     wt_a = Path(info_a.worktree_path)
     (wt_a / "test.json").write_text(json.dumps({"version": "main", "line": 2, "a_field": "value_a"}, indent=2))
-    res_a = auto_commit_changes(wt_a, run_id=run_id, role="a", objective="Branch a: modify line and add a_field")
+    res_a = auto_commit_changes(
+        wt_a,
+        run_id=run_id,
+        plan_id="a",
+        objective="Branch a: modify line and add a_field",
+        main_repo_path=repo,
+        branch="a",
+    )
     if not res_a.success:
         raise RuntimeError(f"auto_commit a failed: {res_a.message}")
 
@@ -63,20 +73,38 @@ def setup_with_worktrees(repo: Path, run_id: str) -> tuple[WorktreeInfo, Worktre
     info_b = git.create_worktree("b", worktree_path_b, create_branch=True)
     wt_b = Path(info_b.worktree_path)
     (wt_b / "test.json").write_text(json.dumps({"version": "main", "line": 3, "b_field": "value_b"}, indent=2))
-    res_b = auto_commit_changes(wt_b, run_id=run_id, role="b", objective="Branch b: modify line and add b_field")
+    res_b = auto_commit_changes(
+        wt_b,
+        run_id=run_id,
+        plan_id="b",
+        objective="Branch b: modify line and add b_field",
+        main_repo_path=repo,
+        branch="b",
+    )
     if not res_b.success:
         raise RuntimeError(f"auto_commit b failed: {res_b.message}")
 
     return info_a, info_b
 
 
-def _ensure_on_main(repo: Path) -> None:
-    """确保主仓库在 main 分支。"""
-    subprocess.run(["git", "checkout", "main"], cwd=str(repo), capture_output=True, text=True, check=True)
+def _get_current_branch(repo: Path) -> str:
+    """获取主仓库当前分支。"""
+    r = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    return r.stdout.strip() if r.returncode == 0 else "main"
 
 
-def _cleanup_existing(repo: Path) -> None:
-    """若 worktree/分支 a、b 已存在则清理（便于重复测试）。"""
+def _ensure_on_branch(repo: Path, branch: str) -> None:
+    """确保主仓库在指定分支。"""
+    subprocess.run(["git", "checkout", branch], cwd=str(repo), capture_output=True, text=True, check=True)
+
+
+def _cleanup_existing(repo: Path, checkout_after: str = "main") -> None:
+    """若 worktree/分支 a、b 已存在则清理（便于重复测试）。清理后 checkout 到 checkout_after。"""
     git = GitWorktree(repo)
     for branch in ("a", "b"):
         entry = git.find_worktree_by_branch(branch)
@@ -84,7 +112,7 @@ def _cleanup_existing(repo: Path) -> None:
             git.remove_worktree(entry.path, force=True)
         if git.branch_exists(branch, include_remote=False):
             git.delete_branch(branch, force=True)
-    subprocess.run(["git", "checkout", "main"], cwd=str(repo), capture_output=True, text=True, check=True)
+    subprocess.run(["git", "checkout", checkout_after], cwd=str(repo), capture_output=True, text=True, check=True)
 
 
 def main() -> int:
@@ -109,6 +137,9 @@ def main() -> int:
         print(f"Error: {repo} is not a git repository (no .git)", file=sys.stderr)
         return 1
 
+    # 与 bro submit 一致：在任意操作前捕获当前分支，作为 merge 目标
+    initial_branch = _get_current_branch(repo)
+
     run_id = "test-mergetool"
 
     if args.no_cleanup:
@@ -119,10 +150,10 @@ def main() -> int:
                 print(f"Error: branch or worktree '{branch}' exists. Use default (with cleanup) or remove manually.", file=sys.stderr)
                 return 1
     else:
-        _cleanup_existing(repo)
+        _cleanup_existing(repo, checkout_after=initial_branch)
 
-    _ensure_on_main(repo)
-    # 确保 main 有 test.json 的初始提交
+    _ensure_on_branch(repo, initial_branch)
+    # 确保有 test.json 的初始提交
     setup_initial_commit(repo)
 
     info_a, info_b = setup_with_worktrees(repo, run_id)
@@ -160,13 +191,26 @@ def main() -> int:
         driver.on_console_message(text)
 
     def run_merge() -> None:
+        # 合并前确保主仓库 worktree 干净（避免之前的 index 污染或残留）
+        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=str(repo), capture_output=True, text=True, check=False)
+        subprocess.run(["git", "clean", "-fd"], cwd=str(repo), capture_output=True, text=True, check=False)
         summary = merger.merge(
-            target_branch="main",
+            target_branch=initial_branch,
             auto_cleanup=False,
             interactive=True,
             message_callback=msg_cb,
         )
         driver.on_console_message(format_merge_summary(summary))
+
+        # 合并成功且 BROKER_AUTO_CLEANUP_WORKTREE=1 时清理 worktree
+        val = get_env_value(repo, "BROKER_AUTO_CLEANUP_WORKTREE") or os.environ.get("BROKER_AUTO_CLEANUP_WORKTREE", "1")
+        auto_cleanup = val.lower() not in ("0", "false", "no")
+        if auto_cleanup and summary.all_merged_successfully:
+            cleaned, errors = merger.cleanup_worktrees(force=True)
+            if cleaned:
+                driver.on_console_message(f"[cleanup] Removed {len(cleaned)} worktrees")
+            for err in errors:
+                driver.on_console_message(f"[cleanup] {err}")
 
     driver.run_with(run_merge)
     return 0

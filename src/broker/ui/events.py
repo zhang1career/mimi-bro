@@ -32,7 +32,7 @@ def emit_task_tree(nodes: list[dict[str, Any]], running_ids: set[str] | None = N
 
 
 def emit_log_paths(paths: list[dict[str, Any]], lines_per_file: int = 3) -> dict[str, Any]:
-    """Build log paths event. paths = [{path, worker_id?, role?}, ...]"""
+    """Build log paths event. paths = [{path, worker_id?, plan_id?}, ...]"""
     return {
         "type": "log_paths",
         "paths": paths,
@@ -61,7 +61,7 @@ def emit_task_assigned(
 
 def emit_result(
     worker_id: str,
-    role: str,
+    plan_id: str,
     status: str,
     work_dir: str,
     exit_code: int | None = None,
@@ -70,7 +70,7 @@ def emit_result(
     evt: dict[str, Any] = {
         "type": "result",
         "worker_id": worker_id,
-        "role": role,
+        "plan_id": plan_id,
         "status": status,
         "work_dir": str(work_dir),
     }
@@ -100,7 +100,7 @@ def emit_console(message: str) -> dict[str, Any]:
 def emit_container_status(
     container_name: str,
     run_id: str,
-    role: str,
+    plan_id: str,
     status: str,
     exit_code: int | None = None,
     error_message: str | None = None,
@@ -111,7 +111,7 @@ def emit_container_status(
     Args:
         container_name: Docker container name
         run_id: Subtask run ID
-        role: Subtask role
+        plan_id: Subtask plan ID
         status: Container status (pending, creating, running, stopped, failed, removed)
         exit_code: Exit code if container finished
         error_message: Error message if failed
@@ -121,7 +121,7 @@ def emit_container_status(
         "type": "container_status",
         "container_name": container_name,
         "run_id": run_id,
-        "role": role,
+        "plan_id": plan_id,
         "status": status,
     }
     if exit_code is not None:

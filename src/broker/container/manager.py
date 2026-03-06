@@ -40,7 +40,7 @@ class ContainerStatus(str, Enum):
 class SubtaskContainer:
     """Subtask container state."""
     run_id: str
-    role: str
+    plan_id: str
     container_name: str
     container_id: str | None = None
     status: ContainerStatus = ContainerStatus.PENDING
@@ -54,7 +54,7 @@ class SubtaskContainer:
     def to_dict(self) -> dict:
         return {
             "run_id": self.run_id,
-            "role": self.role,
+            "plan_id": self.plan_id,
             "container_name": self.container_name,
             "container_id": self.container_id,
             "status": self.status.value,
@@ -79,9 +79,8 @@ def get_docker_client():
 
 
 def _load_env_vars() -> dict[str, str]:
-    """Load environment variables for container."""
+    """Load environment variables for container (from project root .env only)."""
     load_dotenv_from_dir(PROJECT_ROOT)
-    load_dotenv_from_dir(PROJECT_ROOT / "docker")
     env_vars = {}
     cursor_api_key = os.getenv("CURSOR_API_KEY")
     if cursor_api_key:
@@ -186,9 +185,9 @@ class ContainerManager:
         self._containers: dict[str, SubtaskContainer] = {}
         self._lock = threading.Lock()
 
-    def _generate_container_name(self, run_id: str, role: str) -> str:
+    def _generate_container_name(self, run_id: str, plan_id: str) -> str:
         """Generate unique container name: {prefix}-{task_slug}."""
-        slug = task_slug(run_id, role, truncate_run_id=8, max_role_len=20)
+        slug = task_slug(run_id, plan_id, truncate_run_id=8, max_plan_id_len=20)
         return f"{self.CONTAINER_PREFIX}-{slug}"
 
     def _notify_status_change(self, container: SubtaskContainer) -> None:
@@ -202,7 +201,7 @@ class ContainerManager:
     def create_subtask_container(
             self,
             run_id: str,
-            role: str,
+            plan_id: str,
             command: list[str] | str,
             parent_run_id: str | None = None,
             extra_env: dict[str, str] | None = None,
@@ -211,13 +210,13 @@ class ContainerManager:
         Create and start a container for a subtask.
         
         Volume mounting:
-        - {workspace}/works/{run_id}/{role} -> /workspace/work (subtask work dir)
+        - {workspace}/works/{run_id}/{plan_id} -> /workspace/work (subtask work dir)
         - {source} -> /source (rw; agent creates/modifies files)
         - {workspace} -> /workspace (full workspace access)
         
         Args:
             run_id: Subtask run ID
-            role: Subtask role/name
+            plan_id: Subtask plan ID (parent context id)
             command: Command to execute in container
             parent_run_id: Parent task's run ID (for tracking)
             extra_env: Additional environment variables
@@ -228,12 +227,12 @@ class ContainerManager:
         Raises:
             docker.errors.APIError: If container creation fails
         """
-        container_name = self._generate_container_name(run_id, role)
-        work_dir = build_work_dir(self.workspace, run_id, role)
+        container_name = self._generate_container_name(run_id, plan_id)
+        work_dir = build_work_dir(self.workspace, run_id, plan_id)
 
         container_info = SubtaskContainer(
             run_id=run_id,
-            role=role,
+            plan_id=plan_id,
             container_name=container_name,
             status=ContainerStatus.CREATING,
             created_at=datetime.now(),
@@ -258,7 +257,7 @@ class ContainerManager:
             env_vars = _load_env_vars()
             env_vars.update({
                 "RUN_ID": run_id,
-                "ROLE": role,
+                "PLAN_ID": plan_id,
                 "WORKSPACE": "/workspace",
                 "SOURCE": "/source" if self.source != self.workspace else "/workspace",
                 "WORK_DIR": "/workspace/work",
@@ -289,7 +288,7 @@ class ContainerManager:
                     "Cannot create nested container: workspace /workspace is a container path but host path is unknown. "
                     "Ensure Docker socket is available and /workspace is a bind mount so docker inspect can resolve it."
                 )
-            mount_work_dir = build_work_dir(Path(mount_workspace), run_id, role)
+            mount_work_dir = build_work_dir(Path(mount_workspace), run_id, plan_id)
 
             # Prepare volume mounts (host paths must be on host filesystem)
             volumes = {
@@ -429,7 +428,7 @@ class ContainerManager:
     def run_subtask(
             self,
             run_id: str,
-            role: str,
+            plan_id: str,
             command: list[str] | str,
             parent_run_id: str | None = None,
             extra_env: dict[str, str] | None = None,
@@ -446,7 +445,7 @@ class ContainerManager:
         """
         container_info = self.create_subtask_container(
             run_id=run_id,
-            role=role,
+            plan_id=plan_id,
             command=command,
             parent_run_id=parent_run_id,
             extra_env=extra_env,

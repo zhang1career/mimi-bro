@@ -223,4 +223,4 @@ fi
 
 echo ""
 echo "=== WORKAROUND: Run without Docker (--local): ==="
-echo "  bro run -w $WS -s $WS -o 'say hello' --local --api-key \$CURSOR_API_KEY"
+echo "  bro run agent-1 -w $WS -s $WS -o 'say hello' --local --api-key \$CURSOR_API_KEY"

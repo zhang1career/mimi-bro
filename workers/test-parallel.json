@@ -10,8 +10,8 @@
     "entrypoint": "."
   },
   "plans": [
-    { "id": "agent-a", "role": "worker-a", "mode": "agent" },
-    { "id": "agent-b", "role": "worker-b", "mode": "agent" }
+    { "id": "agent-a", "mode": "agent" },
+    { "id": "agent-b", "mode": "agent" }
   ],
   "params": {
     "requirement": "Describe the parallel test task"
