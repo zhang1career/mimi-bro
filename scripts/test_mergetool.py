@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ if str(PROJECT_ROOT / "src") not in sys.path:
 
 from broker.parallel.analyzer import DependencyEdge, DependencyGraph
 from broker.parallel.merge import ResultMerger, format_merge_summary
+from broker.utils.env_util import get_env_value
 from broker.parallel.scheduler import ParallelExecutionState, TaskStatus
 from broker.parallel.worktree import GitWorktree, WorktreeInfo, auto_commit_changes
 from broker.ui.driver import CLIDriver
@@ -198,6 +200,16 @@ def main() -> int:
             message_callback=msg_cb,
         )
         driver.on_console_message(format_merge_summary(summary))
+
+        # 合并成功且 BROKER_AUTO_CLEANUP_WORKTREE=1 时清理 worktree
+        val = get_env_value(repo, "BROKER_AUTO_CLEANUP_WORKTREE") or os.environ.get("BROKER_AUTO_CLEANUP_WORKTREE", "1")
+        auto_cleanup = val.lower() not in ("0", "false", "no")
+        if auto_cleanup and summary.all_merged_successfully:
+            cleaned, errors = merger.cleanup_worktrees(force=True)
+            if cleaned:
+                driver.on_console_message(f"[cleanup] Removed {len(cleaned)} worktrees")
+            for err in errors:
+                driver.on_console_message(f"[cleanup] {err}")
 
     driver.run_with(run_merge)
     return 0
