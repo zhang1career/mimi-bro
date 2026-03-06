@@ -192,8 +192,8 @@ class DependencyConfirmDialog(DialogBase, can_focus=True):
             )
             yield Static("Press Enter/A to confirm, Esc/N to cancel", id="hint")
             with Horizontal(id="button-row"):
-                yield Button("Confirm (A)", id="btn-confirm", variant="success", classes="dialog-button")
-                yield Button("Cancel (N)", id="btn-cancel", variant="error", classes="dialog-button")
+                yield Button("Accept (A)", id="btn-confirm", variant="success", classes="dialog-button")
+                yield Button("Deny (N)", id="btn-cancel", variant="error", classes="dialog-button")
 
     def on_mount(self) -> None:
         """Apply theme colors after mount."""
