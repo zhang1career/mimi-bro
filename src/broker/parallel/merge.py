@@ -116,20 +116,29 @@ class ResultMerger:
         self._work_tree: str | None = None
 
     def _ensure_main_repo_context(self) -> None:
-        """解析主仓库路径及 git-dir、work-tree，确保 merge 始终在主仓库执行，不污染子任务 worktree。"""
+        """
+        解析当前 workspace 的 git-dir、work-tree。
+        使用 workspace 自身上下文（不转主仓库），确保 merge 状态与 index 一致，
+        避免 worktree 场景下 --work-tree 指向主仓库导致 git add 无效。
+        """
         if self._main_repo is not None:
             return
-        self._main_repo = Path(GitWorktree.find_main_repo(self.workspace)).resolve()
+        self._main_repo = self.workspace
         r = subprocess.run(
-            ["git", "rev-parse", "--absolute-git-dir"],
-            cwd=str(self._main_repo),
+            ["git", "rev-parse", "--absolute-git-dir", "--show-toplevel"],
+            cwd=str(self.workspace),
             capture_output=True,
             text=True,
             check=False,
         )
         if r.returncode == 0:
-            self._git_dir = r.stdout.strip()
-            self._work_tree = str(self._main_repo)
+            lines = r.stdout.strip().splitlines()
+            if len(lines) >= 2:
+                self._git_dir = lines[0].strip()
+                self._work_tree = lines[1].strip()
+            elif len(lines) == 1:
+                self._git_dir = lines[0].strip()
+                self._work_tree = str(self.workspace)
 
     def _git_base_args(self) -> list[str]:
         """返回显式指定仓库上下文的 git 前缀，避免污染 worktree。"""
@@ -275,16 +284,15 @@ class ResultMerger:
     def _stage_resolved_files(self) -> bool:
         """
         暂存 mergetool 解决后的文件（采用用户选择的结果）。
-        先对当前 unmerged 文件执行 git add，再 git add -u 兜底。
+        使用 git add . 和 git add -u 确保 worktree 内所有变更被正确暂存。
         """
+        # 先 add 冲突文件，再用 add . 兜底（避免路径或 worktree index 导致的漏暂存）
         conflict_files = self._get_conflict_files()
         if conflict_files:
-            # 显式 add 冲突文件，确保主仓库工作区中 mergetool 写回的内容被暂存
-            result = self._run_git(["add", "--"] + conflict_files, check=False)
-            if result.returncode != 0:
-                return False
-        result = self._run_git(["add", "-u"], check=False)
-        return result.returncode == 0
+            self._run_git(["add", "--"] + conflict_files, check=False)
+        self._run_git(["add", "."], check=False)
+        self._run_git(["add", "-u"], check=False)
+        return True
 
     def _resolve_conflicts_interactive(
         self,
@@ -292,21 +300,21 @@ class ResultMerger:
         message_callback: Callable[[str], None] | None = None,
     ) -> bool:
         """
-        交互式解决冲突：循环启动 mergetool 直到冲突解决或用户放弃。
+        交互式解决冲突：循环启动 mergetool，直到冲突解决。
+        若有冲突则转由人工解决，不设尝试上限（用户可 Ctrl+C 放弃）。
 
         Args:
             result: 包含冲突信息的 MergeResult
             message_callback: 可选的消息回调函数
 
         Returns:
-            True 如果冲突已解决，False 如果用户放弃
+            True 如果冲突已解决，False 如果用户放弃（mergetool 非零退出）
         """
         def msg(text: str) -> None:
             if message_callback:
                 message_callback(text)
 
-        max_attempts = 10
-        for attempt in range(max_attempts):
+        while True:
             conflict_files = self._get_conflict_files()
             if not conflict_files:
                 msg("All conflicts resolved.")
@@ -318,7 +326,10 @@ class ResultMerger:
             msg("")
             msg("Launching merge tool...")
 
-            self._run_mergetool()
+            if not self._run_mergetool():
+                msg("Merge tool exited with error; treat as user abort.")
+                return False
+
             self._stage_resolved_files()
 
             remaining = self._get_conflict_files()
@@ -326,10 +337,7 @@ class ResultMerger:
                 msg("All conflicts resolved.")
                 return True
 
-            msg(f"Still have {len(remaining)} unresolved conflicts.")
-
-        msg(f"Exceeded max attempts ({max_attempts}), aborting.")
-        return False
+            msg("Still have unresolved conflicts; launching merge tool again. Ensure you save all files.")
 
     def _get_head_sha(self) -> str:
         """获取 HEAD 的 SHA"""
@@ -371,23 +379,6 @@ class ResultMerger:
         order = get_topological_order(self.dep_graph)
 
         self._run_git(["checkout", target_branch])
-
-        # 主仓库 worktree 不干净会导致 merge 失败（如 "Your local changes would be overwritten"）
-        # 自动 stash，合并完成后 pop；若 pop 有冲突则调用 mergetool 解决
-        stashed = False
-        status = self._run_git(["status", "--porcelain"], check=False)
-        if status.returncode == 0 and status.stdout.strip():
-            msg("Working tree has uncommitted changes; stashing before merge...")
-            result = self._run_git(
-                ["stash", "push", "-m", "bro: pre-merge stash"],
-                check=False,
-            )
-            if result.returncode == 0:
-                stashed = True
-                msg("Stash created. Merge will run on clean tree.")
-            else:
-                msg("⚠ git stash failed; merge may fail. Consider: git stash")
-                msg("  " + (result.stderr or result.stdout or "").strip()[:100])
 
         for subtask_id in order:
             subtask = self.execution_state.subtasks.get(subtask_id)
@@ -469,22 +460,6 @@ class ResultMerger:
 
         for r in summary.results:
             msg(f"[merge] result {r.subtask_id}: {r.status.value}" + (f" ({r.error_message})" if r.error_message else ""))
-
-        # 合并前若执行了 stash，此处恢复
-        if stashed:
-            msg("[merge] Restoring stashed changes...")
-            pop_result = self._run_git(["stash", "pop"], check=False)
-            if pop_result.returncode != 0:
-                # stash pop 可能因冲突失败，尝试 mergetool 解决后 drop
-                conflict_files = self._get_conflict_files()
-                if conflict_files and (is_interactive_tty() or self._run_external_fn is not None):
-                    msg("Stash pop had conflicts; launching mergetool...")
-                    self._run_mergetool()
-                    self._stage_resolved_files()
-                    self._run_git(["stash", "drop"], check=False)
-                    msg("Stash conflicts resolved.")
-                else:
-                    msg("⚠ Stash pop failed (conflicts). Run 'git mergetool' and 'git stash drop' manually.")
 
         if auto_cleanup:
             self.cleanup_worktrees(force=True)

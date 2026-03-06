@@ -700,7 +700,7 @@ def _execute_parallel_items(
                 drv.on_console_message(f"[ERROR] Subtask {subtask.id} exception: {error_summary_for_console(e)}")
                 return 1
 
-    # 在创建 worktree 前捕获原始分支，作为 merge 的目标（不应硬编码 main）
+    # 捕获原始分支 a，创建执行分支 b：在 b 上提交全部改动，worktree merge 目标为 b，最后将 b 合并回 a
     _br = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=str(scheduler_workspace),
@@ -708,6 +708,43 @@ def _execute_parallel_items(
         text=True,
     )
     initial_branch = _br.stdout.strip() if _br.returncode == 0 else "main"
+    merge_branch = f"bro-merge-{run_id[:12]}"
+    merge_branch_created = False
+
+    if GitWorktree.is_git_repo(scheduler_workspace):
+        # 创建分支 b，提交全部改动（不论是否有脏文件），确保 merge 时工作区干净
+        try:
+            subprocess.run(
+                ["git", "checkout", "-b", merge_branch],
+                cwd=str(scheduler_workspace),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            merge_branch_created = True
+            if verbose:
+                drv.verbose(f"[broker] Created merge branch: {merge_branch}")
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=str(scheduler_workspace),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit_r = subprocess.run(
+                ["git", "commit", "-m", "bro: pre-execution snapshot"],
+                cwd=str(scheduler_workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if commit_r.returncode == 0 and verbose:
+                drv.verbose(f"[broker] Committed pre-execution state to {merge_branch}")
+        except subprocess.CalledProcessError as e:
+            if verbose:
+                drv.verbose(f"[broker] Pre-execution branch setup failed: {e}")
+            merge_branch_created = False
+            merge_branch = initial_branch
 
     if verbose:
         drv.verbose(f"[broker] Starting parallel execution with {max_workers} workers...")
@@ -733,7 +770,7 @@ def _execute_parallel_items(
             drv.on_console_message(msg)
 
         merge_summary = merger.merge(
-            target_branch=initial_branch,
+            target_branch=merge_branch,
             interactive=interactive_merge,
             message_callback=message_callback,
         )
@@ -741,6 +778,46 @@ def _execute_parallel_items(
         merged_count = sum(1 for r in merge_summary.results if r.status.value == "merged")
         if verbose:
             drv.verbose(f"[broker] Merged {merged_count} subtasks")
+
+        # 将 merge_branch 合并回原始分支 a（分支 b 由本程序创建，应由本程序负责 merge 回 a）
+        if merge_branch_created and merge_summary.all_merged_successfully:
+            try:
+                subprocess.run(
+                    ["git", "checkout", initial_branch],
+                    cwd=str(scheduler_workspace),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                merge_back = subprocess.run(
+                    ["git", "merge", merge_branch, "--no-edit"],
+                    cwd=str(scheduler_workspace),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if merge_back.returncode == 0:
+                    if verbose:
+                        drv.verbose(f"[broker] Merged {merge_branch} back to {initial_branch}")
+                    subprocess.run(
+                        ["git", "branch", "-d", merge_branch],
+                        cwd=str(scheduler_workspace),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                else:
+                    drv.on_console_message(
+                        f"⚠ Merge back to {initial_branch} failed. "
+                        f"Resolve conflicts if any, then: git checkout {initial_branch} && git merge {merge_branch}"
+                    )
+            except subprocess.CalledProcessError as e:
+                drv.on_console_message(f"⚠ Checkout {initial_branch} failed: {e}")
+        elif merge_branch_created and not merge_summary.all_merged_successfully:
+            drv.on_console_message(
+                f"Merge had conflicts. Resolve them (git mergetool, git add, git merge --continue), "
+                f"then: git checkout {initial_branch} && git merge {merge_branch}"
+            )
 
         val_workspace = get_env_value(workspace, "BROKER_AUTO_CLEANUP_WORKTREE")
         val_project_root = get_env_value(project_root, "BROKER_AUTO_CLEANUP_WORKTREE")
@@ -762,6 +839,17 @@ def _execute_parallel_items(
     else:
         if verbose:
             drv.verbose(f"[broker] {summary['failed']} subtasks failed, {summary['skipped']} skipped")
+        if merge_branch_created:
+            try:
+                subprocess.run(
+                    ["git", "checkout", initial_branch],
+                    cwd=str(scheduler_workspace),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            except subprocess.CalledProcessError:
+                pass
         return 1
 
 
