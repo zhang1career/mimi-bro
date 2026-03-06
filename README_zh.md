@@ -18,6 +18,10 @@ bro submit workers/test-greetings.json -w docker/workspace -s src --local
 bro submit workers/test-greetings.json --local -a person=John
 ```
 
+![确认页面](assets/screenshoot-confirm-dependencies.png)
+![主页面](assets/screenshoot-main-pannel.png)
+
+
 ## 示例
 
 ### 并行执行

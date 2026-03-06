@@ -18,6 +18,9 @@ bro submit workers/test-greetings.json -w docker/workspace -s src --local
 bro submit workers/test-greetings.json --local -a person=John
 ```
 
+![confirm](assets/screenshoot-confirm-dependencies.png)
+![main pannel](assets/screenshoot-main-pannel.png)
+
 ## Examples
 
 ### Parallel execution
