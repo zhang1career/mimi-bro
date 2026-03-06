@@ -700,6 +700,15 @@ def _execute_parallel_items(
                 drv.on_console_message(f"[ERROR] Subtask {subtask.id} exception: {error_summary_for_console(e)}")
                 return 1
 
+    # 在创建 worktree 前捕获原始分支，作为 merge 的目标（不应硬编码 main）
+    _br = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(scheduler_workspace),
+        capture_output=True,
+        text=True,
+    )
+    initial_branch = _br.stdout.strip() if _br.returncode == 0 else "main"
+
     if verbose:
         drv.verbose(f"[broker] Starting parallel execution with {max_workers} workers...")
 
@@ -724,6 +733,7 @@ def _execute_parallel_items(
             drv.on_console_message(msg)
 
         merge_summary = merger.merge(
+            target_branch=initial_branch,
             interactive=interactive_merge,
             message_callback=message_callback,
         )

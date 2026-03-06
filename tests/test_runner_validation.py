@@ -6,7 +6,8 @@ Generated. Do not modify core safety logic via agent.
 
 import pytest
 
-from broker.agent.runner import normalize_step, validate_agents_and_task
+from broker.agent.execution_common import normalize_step
+from broker.agent.runner import validate_agents_and_task
 
 
 def test_validate_agents_empty_raises() -> None:
@@ -19,22 +20,20 @@ def test_validate_agents_empty_raises() -> None:
 def test_validate_agents_not_list_raises() -> None:
     """_validate_agents_and_task raises when agents is not a list."""
     with pytest.raises(ValueError) as exc_info:
-        validate_agents_and_task({"id": "a", "role": "r"}, {"id": "t"})
+        validate_agents_and_task({"id": "a"}, {"id": "t"})
     assert "list" in str(exc_info.value).lower()
 
 
 def test_validate_agents_missing_id_raises() -> None:
     """_validate_agents_and_task raises when an agent has no 'id'."""
     with pytest.raises(ValueError) as exc_info:
-        validate_agents_and_task([{"role": "r"}], {"id": "t"})
+        validate_agents_and_task([{}], {"id": "t"})
     assert "id" in str(exc_info.value).lower()
 
 
-def test_validate_agents_missing_role_raises() -> None:
-    """_validate_agents_and_task raises when an agent has no 'role'."""
-    with pytest.raises(ValueError) as exc_info:
-        validate_agents_and_task([{"id": "a"}], {"id": "t"})
-    assert "role" in str(exc_info.value).lower()
+def test_validate_agents_with_id_only_passes() -> None:
+    """_validate_agents_and_task accepts agent with only 'id' (plan_id, role removed)."""
+    validate_agents_and_task([{"id": "a"}], {"id": "t"})
 
 
 def test_validate_agents_non_dict_item_raises() -> None:

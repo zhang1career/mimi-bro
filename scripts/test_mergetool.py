@@ -5,11 +5,11 @@
 在 --source 指定的 git 仓库中：
 1. 创建 test.json 并初始提交
 2. 复用 GitWorktree 创建 worktree，分支 a 和 b 分别在各自 worktree 中修改 test.json（制造合并冲突）
-3. 复用 auto_commit_changes 提交各 worktree 变更
-4. 通过 ResultMerger 按拓扑顺序 cherry-pick 合并
+3. 复用 auto_commit_changes（含 main_repo_path + branch）提交各 worktree 变更
+4. 通过 ResultMerger 按拓扑顺序 merge 合并到原始分支
 5. 发现冲突后弹出 git mergetool 窗口
 
-复用 bro submit 的 GitWorktree、auto_commit_changes、TUI、CLIDriver、ResultMerger 等代码。
+覆盖：main_repo_path/branch、HEAD 切换、merge（非 cherry-pick）、原始分支作为目标。
 """
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ def setup_initial_commit(repo: Path) -> None:
 def setup_with_worktrees(repo: Path, run_id: str) -> tuple[WorktreeInfo, WorktreeInfo]:
     """
     复用 GitWorktree 创建 worktree，在各 worktree 中修改 test.json 并提交。
+    使用 main_repo_path + branch 覆盖 broker 的提交逻辑（含 HEAD 切换）。
     返回 (WorktreeInfo_a, WorktreeInfo_b)。
     """
     git = GitWorktree(repo)
@@ -55,7 +56,14 @@ def setup_with_worktrees(repo: Path, run_id: str) -> tuple[WorktreeInfo, Worktre
     info_a = git.create_worktree("a", worktree_path_a, create_branch=True)
     wt_a = Path(info_a.worktree_path)
     (wt_a / "test.json").write_text(json.dumps({"version": "main", "line": 2, "a_field": "value_a"}, indent=2))
-    res_a = auto_commit_changes(wt_a, run_id=run_id, role="a", objective="Branch a: modify line and add a_field")
+    res_a = auto_commit_changes(
+        wt_a,
+        run_id=run_id,
+        plan_id="a",
+        objective="Branch a: modify line and add a_field",
+        main_repo_path=repo,
+        branch="a",
+    )
     if not res_a.success:
         raise RuntimeError(f"auto_commit a failed: {res_a.message}")
 
@@ -63,11 +71,29 @@ def setup_with_worktrees(repo: Path, run_id: str) -> tuple[WorktreeInfo, Worktre
     info_b = git.create_worktree("b", worktree_path_b, create_branch=True)
     wt_b = Path(info_b.worktree_path)
     (wt_b / "test.json").write_text(json.dumps({"version": "main", "line": 3, "b_field": "value_b"}, indent=2))
-    res_b = auto_commit_changes(wt_b, run_id=run_id, role="b", objective="Branch b: modify line and add b_field")
+    res_b = auto_commit_changes(
+        wt_b,
+        run_id=run_id,
+        plan_id="b",
+        objective="Branch b: modify line and add b_field",
+        main_repo_path=repo,
+        branch="b",
+    )
     if not res_b.success:
         raise RuntimeError(f"auto_commit b failed: {res_b.message}")
 
     return info_a, info_b
+
+
+def _get_current_branch(repo: Path) -> str:
+    """获取主仓库当前分支。"""
+    r = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+    )
+    return r.stdout.strip() if r.returncode == 0 else "main"
 
 
 def _ensure_on_main(repo: Path) -> None:
@@ -124,6 +150,8 @@ def main() -> int:
     _ensure_on_main(repo)
     # 确保 main 有 test.json 的初始提交
     setup_initial_commit(repo)
+    # 合并目标为当前（原始）分支
+    target_branch = _get_current_branch(repo)
 
     info_a, info_b = setup_with_worktrees(repo, run_id)
 
@@ -160,8 +188,11 @@ def main() -> int:
         driver.on_console_message(text)
 
     def run_merge() -> None:
+        # 合并前确保主仓库 worktree 干净（避免之前的 index 污染或残留）
+        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=str(repo), capture_output=True, text=True, check=False)
+        subprocess.run(["git", "clean", "-fd"], cwd=str(repo), capture_output=True, text=True, check=False)
         summary = merger.merge(
-            target_branch="main",
+            target_branch=target_branch,
             auto_cleanup=False,
             interactive=True,
             message_callback=msg_cb,

@@ -302,6 +302,7 @@ class ParallelScheduler:
                     objective=subtask.objective,
                     requirement=subtask.requirement,
                     main_repo_path=self.workspace,
+                    branch=worktree_info.branch,
                 )
                 if not commit_result.success and not commit_result.skipped:
                     exit_code = 1

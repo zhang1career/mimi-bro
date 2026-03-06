@@ -129,14 +129,19 @@ class ResultMerger:
         args: list[str],
         cwd: Path | None = None,
         check: bool = True,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
         """执行 git 命令"""
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
         return subprocess.run(
             ["git"] + args,
             cwd=str(cwd or self.workspace),
             capture_output=True,
             text=True,
             check=check,
+            env=run_env,
         )
 
     def _get_current_branch(self) -> str:
@@ -157,31 +162,37 @@ class ResultMerger:
         except Exception:
             return []
 
-    def _merge_branch_git(self, branch: str) -> tuple[bool, list[str]]:
+    def _merge_branch_git(self, branch: str) -> tuple[bool, list[str], str]:
         """
         将分支 merge 到当前 HEAD（3-way merge）。
 
         Returns:
-            (success, conflict_files)
+            (success, conflict_files, error_detail)
         """
         result = self._run_git(["merge", branch, "--no-edit"], check=False)
 
         if result.returncode == 0:
-            return True, []
+            return True, [], ""
 
         if "CONFLICT" in result.stdout or "conflict" in (result.stderr or "").lower():
             conflict_files = self._get_conflict_files()
-            return False, conflict_files
+            return False, conflict_files, ""
 
-        return False, []
+        err = (result.stderr or "").strip() or (result.stdout or "").strip()
+        return False, [], err
 
     def _abort_merge(self) -> None:
         """中止 merge"""
         self._run_git(["merge", "--abort"], check=False)
 
     def _continue_merge(self) -> bool:
-        """继续 merge（冲突解决后），使用 --no-edit 避免在非交互环境调用 vi。"""
-        result = self._run_git(["merge", "--continue", "--no-edit"], check=False)
+        """继续 merge（冲突解决后）。git merge --continue 不接受 --no-edit，需用 GIT_EDITOR=true 禁用编辑器。"""
+        no_editor = {"GIT_EDITOR": "true", "EDITOR": "true", "VISUAL": "true"}
+        result = self._run_git(
+            ["merge", "--continue"],
+            check=False,
+            env=no_editor,
+        )
         return result.returncode == 0
 
     def _get_conflict_files(self) -> list[str]:
@@ -235,14 +246,12 @@ class ResultMerger:
 
     def _stage_resolved_files(self) -> bool:
         """
-        暂存所有已解决的冲突文件。
-        先对已知冲突文件执行 git add，再 git add -u 兜底。
-
-        Returns:
-            True 如果成功，False 否则
+        暂存 mergetool 解决后的文件（采用用户选择的结果）。
+        先对当前 unmerged 文件执行 git add，再 git add -u 兜底。
         """
         conflict_files = self._get_conflict_files()
         if conflict_files:
+            # 显式 add 冲突文件，确保主仓库工作区中 mergetool 写回的内容被暂存
             result = self._run_git(["add", "--"] + conflict_files, check=False)
             if result.returncode != 0:
                 return False
@@ -332,6 +341,12 @@ class ResultMerger:
         order = get_topological_order(self.dep_graph)
 
         self._run_git(["checkout", target_branch])
+
+        # 确保主仓库 worktree 干净，否则 merge 会失败（如 "local changes would be overwritten"）
+        status = self._run_git(["status", "--porcelain"], check=False)
+        if status.returncode == 0 and status.stdout.strip():
+            msg("⚠ Working tree has uncommitted changes; merge may fail. Consider: git stash")
+            msg("  " + status.stdout.strip().split("\n")[0][:60])
 
         for subtask_id in order:
             subtask = self.execution_state.subtasks.get(subtask_id)
@@ -443,7 +458,7 @@ class ResultMerger:
                 error_message="No new commits",
             )
 
-        success, conflict_files = self._merge_branch_git(branch)
+        success, conflict_files, err_detail = self._merge_branch_git(branch)
 
         if not success:
             if conflict_files:
@@ -453,11 +468,14 @@ class ResultMerger:
                     status=MergeStatus.CONFLICT,
                     conflict_files=conflict_files,
                 )
+            err_msg = "Merge failed"
+            if err_detail:
+                err_msg += f": {err_detail[:200]}"
             return MergeResult(
                 subtask_id=subtask_id,
                 branch=branch,
                 status=MergeStatus.FAILED,
-                error_message="Merge failed",
+                error_message=err_msg,
             )
 
         return MergeResult(
@@ -555,7 +573,9 @@ def format_merge_summary(summary: MergeSummary) -> str:
             lines.append(f"  - {r.subtask_id}: {r.error_message}")
         lines.append("")
 
-    total = len(summary.results)
-    lines.append(f"总计: {len(merged)}/{total} 成功合并")
+    # 分母为“实际参与合并”的任务数（排除 SKIPPED），与用户预期一致
+    attempted = [r for r in summary.results if r.status != MergeStatus.SKIPPED]
+    total_attempted = len(attempted)
+    lines.append(f"总计: {len(merged)}/{total_attempted} 成功合并")
 
     return "\n".join(lines)
